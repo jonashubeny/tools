@@ -3,15 +3,16 @@
 # repositories that are already cloned get fetched and pulled
 #
 # Usage:
-#   ./clone-org.sh             # asks for the link
-#   ./clone-org.sh <link>      # e.g. https://github.com/my-org
+#   ./clone-org.sh                    # asks for the link and the directory
+#   ./clone-org.sh <link>             # e.g. https://github.com/my-org
+#   ./clone-org.sh <link> <directory> # e.g. https://github.com/my-org ~/src/my-org
 #
 # Supported hosts:
 #   GitHub (+ Enterprise), GitLab (+ self-hosted, incl. subgroups),
 #   Gitea / Forgejo / Gogs (e.g. Codeberg), Bitbucket Cloud
 #
 # Environment variables:
-#   DEST_DIR   where to clone (default: ./<organization>)
+#   DEST_DIR   where to clone (same as the <directory> argument)
 #   GIT_TOKEN  access token for private repos and higher API limits
 #   USE_SSH    1 = clone over SSH instead of HTTPS
 #   PROVIDER   github | gitlab | gitea | bitbucket (skips auto-detection)
@@ -132,6 +133,19 @@ fi
 
 [[ "${USE_SSH:-0}" == 1 ]] && SSH=1 || SSH=0
 
+# Only GitLab has nested groups, elsewhere the organization is the first part
+[[ "$PROVIDER" == gitlab ]] || ORG="${ORG%%/*}"
+
+# --- Destination ----------------------------------------------------------
+
+DEST_DIR="${2:-${DEST_DIR:-}}"
+if [[ -z "$DEST_DIR" ]]; then
+    DEFAULT_DIR="$PWD/${ORG##*/}"
+    read -rp "Directory to clone '$ORG' into [$DEFAULT_DIR]: " DEST_DIR || true
+    DEST_DIR="${DEST_DIR:-$DEFAULT_DIR}"
+fi
+DEST_DIR="${DEST_DIR/#\~/$HOME}"
+
 # --- Repository list ------------------------------------------------------
 
 info "Loading the repository list of '$ORG' from $HOST ($PROVIDER)..."
@@ -139,7 +153,6 @@ info "Loading the repository list of '$ORG' from $HOST ($PROVIDER)..."
 case "$PROVIDER" in
     github)
         [[ "$HOST" == github.com ]] && API="https://api.github.com" || API="$BASE/api/v3"
-        ORG="${ORG%%/*}"
         (( SSH )) && FIELD="ssh_url" || FIELD="clone_url"
         FILTER=".[] | \"\(.name)\t\(.$FIELD)\""
         fetch_pages "$API/orgs/$ORG/repos?per_page=100&page=" "$FILTER" \
@@ -148,7 +161,6 @@ case "$PROVIDER" in
         ;;
     gitea)
         API="$BASE/api/v1"
-        ORG="${ORG%%/*}"
         (( SSH )) && FIELD="ssh_url" || FIELD="clone_url"
         FILTER=".[] | \"\(.name)\t\(.$FIELD)\""
         fetch_pages "$API/orgs/$ORG/repos?limit=50&page=" "$FILTER" \
@@ -165,7 +177,6 @@ case "$PROVIDER" in
             || not_found
         ;;
     bitbucket)
-        ORG="${ORG%%/*}"
         (( SSH )) && FIELD="ssh" || FIELD="https"
         NEXT="https://api.bitbucket.org/2.0/repositories/$ORG?pagelen=100"
         while [[ -n "$NEXT" ]]; do
@@ -181,8 +192,6 @@ case "$PROVIDER" in
         die "Unknown PROVIDER '$PROVIDER'. Supported: github, gitlab, gitea, bitbucket."
         ;;
 esac
-
-DEST_DIR="${DEST_DIR:-$PWD/${ORG##*/}}"
 
 (( ${#REPOS[@]} )) || die "No (visible) repositories in '$ORG'. Private ones need GIT_TOKEN."
 info "Repositories found: ${#REPOS[@]}, destination: $DEST_DIR"
