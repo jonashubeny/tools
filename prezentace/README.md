@@ -14,6 +14,30 @@ Aplikace běží na `http://<server>:8080`, přihlášení `admin` + heslo z `.e
 
 Data (databáze, nahrané soubory, vykreslené snímky) jsou ve volume `data` (`/data` v kontejneru).
 
+## Lokální spuštění bez Dockeru
+
+Hodí se pro vývoj a rychlé vyzkoušení. Pro převod prezentací musí být nainstalované LibreOffice (`soffice`) a poppler (`pdftoppm`).
+
+Poprvé vytvořte virtuální prostředí a nainstalujte závislosti (ve složce projektu):
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+Pak aplikaci spusťte:
+
+```bash
+cd app
+DATA_DIR=/tmp/prezentace-data ADMIN_PASSWORD=demo ../.venv/bin/flask --app app run --debug --port 8080
+```
+
+Aplikace běží na `http://localhost:8080`, přihlášení `admin` / `demo`. Ukončíte ji klávesami Ctrl+C.
+
+- `DATA_DIR` je nutné nastavit, výchozí `/data` existuje jen v kontejneru. Smazáním této složky začnete s čistou databází.
+- `ADMIN_PASSWORD` se použije jen při prvním startu s prázdnou databází.
+- `--debug` znovu načítá šablony a Python při změně; po úpravě CSS obnovte stránku přes Ctrl+Shift+R.
+
 ## Nastavení (proměnné prostředí)
 
 | Proměnná | Výchozí | Význam |
