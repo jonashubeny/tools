@@ -4,7 +4,7 @@ services:
     image: prezentace:latest
     restart: unless-stopped
     ports:
-      - "8080:8000"
+      - "8000:8000"
     environment:
       # Used only on the first start, when the database has no users yet.
       ADMIN_USER: admin
