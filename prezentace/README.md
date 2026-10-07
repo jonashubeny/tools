@@ -33,3 +33,5 @@ Data (databáze, nahrané soubory, vykreslené snímky) jsou ve volume `data` (`
 | F | celá obrazovka |
 | B | zatmít obrazovku |
 | Home / End | první / poslední snímek |
+
+Vibecoded
