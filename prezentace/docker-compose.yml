@@ -1,0 +1,19 @@
+services:
+  prezentace:
+    build: .
+    image: prezentace:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8000"
+    environment:
+      # Used only on the first start, when the database has no users yet.
+      ADMIN_USER: admin
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:?Nastavte ADMIN_PASSWORD v souboru .env}"
+      MAX_UPLOAD_MB: 500
+      # Set to 1 when the app is served over HTTPS (behind a reverse proxy).
+      COOKIE_SECURE: 0
+    volumes:
+      - data:/data
+
+volumes:
+  data:

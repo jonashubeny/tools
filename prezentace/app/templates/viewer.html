@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ pres.title }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='viewer.css') }}">
+</head>
+<body>
+  <img id="slide" alt="">
+  <div id="blank" hidden></div>
+  <div id="bar">
+    <a href="{{ back_url }}" title="Zpět do složky">← Zpět</a>
+    <button id="prev-pres" title="Předchozí prezentace (↑)">▲</button>
+    <button id="next-pres" title="Další prezentace (↓)">▼</button>
+    <span id="title"></span>
+    <button id="prev" title="Předchozí snímek (←)">◀</button>
+    <span id="counter"></span>
+    <button id="next" title="Další snímek (→)">▶</button>
+    <button id="fullscreen" title="Celá obrazovka (F)">⛶ Celá obrazovka</button>
+  </div>
+  <script id="data" type="application/json">{{ data|tojson }}</script>
+  <script src="{{ url_for('static', filename='viewer.js') }}"></script>
+</body>
+</html>

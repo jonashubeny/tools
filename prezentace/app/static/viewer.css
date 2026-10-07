@@ -1,0 +1,26 @@
+html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+body { font: 14px/1.4 system-ui, sans-serif; color: #eee; user-select: none; }
+body.idle { cursor: none; }
+
+#slide { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+#blank { position: fixed; inset: 0; background: #000; }
+
+#bar {
+  position: fixed; left: 0; right: 0; bottom: 0;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 14px calc(10px + env(safe-area-inset-bottom, 0px));
+  background: rgba(20, 20, 20, .88);
+  transition: opacity .25s;
+}
+body.idle #bar { opacity: 0; pointer-events: none; }
+
+#title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; }
+#counter { min-width: 64px; text-align: center; font-variant-numeric: tabular-nums; }
+
+#bar a, #bar button {
+  font: inherit; color: #eee; background: #333; border: 0; border-radius: 6px;
+  padding: 7px 12px; cursor: pointer; text-decoration: none;
+}
+#bar a:hover, #bar button:hover:not(:disabled) { background: #4a4a4a; }
+#bar button:disabled { opacity: .35; cursor: default; }
+#bar a:focus-visible, #bar button:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 2px; }

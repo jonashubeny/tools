@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Účet{% endblock %}
+{% block content %}
+<form method="post" class="card narrow">
+  <h1>Změna hesla</h1>
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label>Současné heslo
+    <input name="old_password" type="password" autocomplete="current-password" required>
+  </label>
+  <label>Nové heslo
+    <input name="new_password" type="password" autocomplete="new-password" minlength="8" required>
+  </label>
+  <button class="primary">Změnit heslo</button>
+</form>
+{% endblock %}

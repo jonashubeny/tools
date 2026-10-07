@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block content %}
+<nav class="crumbs">
+  <a href="{{ url_for('browse') }}">Moje prezentace</a>
+  {% for c in crumbs %}<span>/</span><a href="{{ url_for('browse', folder_id=c.id) }}">{{ c.name }}</a>{% endfor %}
+</nav>
+
+<div class="toolbar">
+  <form method="post" action="{{ url_for('folder_create') }}" class="inline">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    {% if folder_id %}<input type="hidden" name="parent_id" value="{{ folder_id }}">{% endif %}
+    <input name="name" placeholder="Název nové složky" maxlength="200" required>
+    <button>Vytvořit složku</button>
+  </form>
+  <form method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data" class="inline" id="upload-form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    {% if folder_id %}<input type="hidden" name="folder_id" value="{{ folder_id }}">{% endif %}
+    <input type="file" name="files" accept="{{ allowed_ext }}" multiple required>
+    <button class="primary">Nahrát prezentace</button>
+    <progress id="upload-progress" max="100" value="0" hidden></progress>
+  </form>
+</div>
+
+{% if not folders and not presentations %}
+  <p class="empty">Tady zatím nic není. Vytvořte složku nebo nahrajte prezentaci (PowerPoint nebo LibreOffice Impress).</p>
+{% endif %}
+
+<ul class="grid">
+  {% for f in folders %}
+  <li class="item">
+    <a class="thumb folder" href="{{ url_for('browse', folder_id=f.id) }}" aria-hidden="true" tabindex="-1">
+      <svg viewBox="0 0 24 24" width="56" height="56"><path fill="currentColor" d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/></svg>
+    </a>
+    <a class="name" href="{{ url_for('browse', folder_id=f.id) }}">{{ f.name }}</a>
+    <div class="actions">
+      <form method="post" action="{{ url_for('folder_rename', folder_id=f.id) }}" data-prompt="Nový název složky" data-value="{{ f.name }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="name">
+        <button class="link">Přejmenovat</button>
+      </form>
+      <form method="post" action="{{ url_for('folder_delete', folder_id=f.id) }}" data-confirm="Smazat složku „{{ f.name }}“ včetně veškerého obsahu?">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button class="link danger">Smazat</button>
+      </form>
+    </div>
+  </li>
+  {% endfor %}
+
+  {% for p in presentations %}
+  <li class="item" {% if p.status == 'processing' %}data-processing{% endif %}>
+    {% if p.status == 'ready' %}
+      <a class="thumb" href="{{ url_for('viewer', pid=p.id) }}" aria-hidden="true" tabindex="-1">
+        <img src="{{ url_for('slide', pid=p.id, name='thumb') }}" alt="" loading="lazy">
+      </a>
+      <a class="name" href="{{ url_for('viewer', pid=p.id) }}">{{ p.title }}</a>
+      <span class="meta">{{ p.slide_count }} snímků</span>
+    {% elif p.status == 'processing' %}
+      <div class="thumb pending">Převádí se…</div>
+      <span class="name">{{ p.title }}</span>
+    {% else %}
+      <div class="thumb failed">Převod selhal</div>
+      <span class="name">{{ p.title }}</span>
+      <span class="meta">{{ p.error }}</span>
+    {% endif %}
+    <div class="actions">
+      <form method="post" action="{{ url_for('presentation_rename', pid=p.id) }}" data-prompt="Nový název prezentace" data-value="{{ p.title }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="name">
+        <button class="link">Přejmenovat</button>
+      </form>
+      <form method="post" action="{{ url_for('presentation_delete', pid=p.id) }}" data-confirm="Smazat prezentaci „{{ p.title }}“?">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button class="link danger">Smazat</button>
+      </form>
+    </div>
+  </li>
+  {% endfor %}
+</ul>
+{% endblock %}
