@@ -1,0 +1,17 @@
+# Built output and dependencies
+node_modules/
+dist/
+coverage/
+
+# Runtime data
+data/
+*.sqlite
+
+# Prose and tables are wrapped by hand; the formatter would only reshuffle them.
+*.md
+
+# Compose files keep the quoting used in the Compose documentation.
+*.yaml
+*.yml
+
+package-lock.json

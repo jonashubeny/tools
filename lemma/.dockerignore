@@ -1,0 +1,22 @@
+# Everything the image build does not need. Keeps the build context small and makes sure
+# no local data or secrets can end up in a layer.
+.git
+.gitignore
+node_modules
+**/node_modules
+**/dist
+data
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.env
+.env.*
+!.env.example
+docs
+README.md
+Dockerfile
+compose*.yaml
+.vscode
+.idea
+coverage
+*.log
