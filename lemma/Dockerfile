@@ -21,7 +21,18 @@ COPY packages/core/package.json packages/core/
 COPY packages/content/package.json packages/content/
 COPY packages/server/package.json packages/server/
 COPY packages/web/package.json packages/web/
-RUN npm ci --no-audit --no-fund
+
+# The one step that needs the network to behave: about 80 MB from the npm registry.
+# npm retries a request that fails, but a download that stalls half-way makes it give up
+# at once. So the download cache lives in a cache mount, where it survives a failed build,
+# and the install gets three attempts — each one only fetches what is still missing.
+RUN --mount=type=cache,target=/root/.npm \
+    for attempt in 1 2 3; do \
+      npm ci --no-audit --no-fund && exit 0; \
+      echo "npm ci failed (attempt $attempt of 3)" >&2; \
+      sleep 5; \
+    done; \
+    exit 1
 
 COPY tsconfig.base.json vitest.config.ts ./
 COPY scripts scripts

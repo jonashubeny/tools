@@ -1,11 +1,22 @@
-import type { ForgeDto, GradeScale, MeDto, PauseDto, SettingsDto, TestDto } from '@lemma/core';
+import {
+  type ForgeDto,
+  type GradeScale,
+  type MeDto,
+  type PauseDto,
+  type SettingsDto,
+  type TestDto,
+  type UserDto,
+  ADMIN_USERNAME,
+  MIN_PASSWORD_LENGTH,
+  USERNAME_PATTERN,
+} from '@lemma/core';
 import { useQueryClient } from '@tanstack/react-query';
-import { Download, RefreshCw, Trash2 } from 'lucide-react';
+import { Download, KeyRound, RefreshCw, Trash2 } from 'lucide-react';
 import { type FormEvent, type ReactNode, useEffect, useState } from 'react';
 import { useLocation } from 'react-router';
 import { ApiFailure, api } from '../app/api';
 import { useT } from '../app/i18n';
-import { useForge, useGraph, useMe, useRefresh } from '../app/queries';
+import { useForge, useGraph, useMe, useRefresh, useUsers } from '../app/queries';
 import { cn } from '../lib/cn';
 import { formatDateTime, formatDay } from '../lib/format';
 import {
@@ -39,6 +50,7 @@ export function Settings() {
 
   if (!me.data) return <Loading />;
   const settings = me.data.settings;
+  const admin = me.data.account?.admin ?? false;
 
   const save = async (patch: Partial<SettingsDto>): Promise<void> => {
     setError(null);
@@ -68,9 +80,10 @@ export function Settings() {
         <Tests settings={settings} save={save} today={me.data.today} />
         <Pauses settings={settings} save={save} />
         <Grades settings={settings} save={save} />
-        <Integrations settings={settings} save={save} />
+        <Integrations settings={settings} save={save} admin={admin} />
         <Tutor me={me.data} />
         {me.data.authRequired && <Password />}
+        {me.data.authRequired && admin && <Users tutorConfigured={me.data.tutor.enabled} />}
         <Data me={me.data} />
       </div>
     </div>
@@ -444,7 +457,7 @@ function Grades({ settings, save }: { settings: SettingsDto; save: Save }) {
   );
 }
 
-function Integrations({ settings, save }: { settings: SettingsDto; save: Save }) {
+function Integrations({ settings, save, admin }: { settings: SettingsDto; save: Save; admin: boolean }) {
   const t = useT();
   const forge = useForge();
   const client = useQueryClient();
@@ -463,7 +476,7 @@ function Integrations({ settings, save }: { settings: SettingsDto; save: Save })
   };
   return (
     <Panel
-      title={t('GitHub a Forgejo', 'GitHub and Forgejo')}
+      title={admin ? t('GitHub a Forgejo', 'GitHub and Forgejo') : 'GitHub'}
       lead={t(
         'Volitelné. Lemma si z veřejných API stáhne počty tvých příspěvků a ukáže je vedle matematiky. Bez přihlášení, jen veřejná data; když služba neodpovídá, použije se poslední uložená kopie.',
         'Optional. Lemma fetches your contribution counts from the public APIs and shows them next to the mathematics. No sign-in, public data only; when a service is down the last stored copy is used.',
@@ -479,7 +492,8 @@ function Integrations({ settings, save }: { settings: SettingsDto; save: Save })
           spellCheck={false}
         />
       </Field>
-      <div className="flex flex-wrap gap-3">
+      {/* An address makes the server call that host, so naming one is the administrator's alone. */}
+      <div className={cn('flex flex-wrap gap-3', !admin && 'hidden')}>
         <Field label={t('Adresa Forgejo / Gitea', 'Forgejo / Gitea address')} className="min-w-0 flex-1">
           <TextInput
             value={forgejoUrl}
@@ -524,12 +538,14 @@ function Integrations({ settings, save }: { settings: SettingsDto; save: Save })
           <RefreshCw size={13} />
           {t('Načíst teď', 'Fetch now')}
         </Button>
-        <span className="text-xs text-ink-3">
-          {t(
-            'Přístupové tokeny (pro soukromou aktivitu nebo vyšší limity) se zadávají jen v souboru .env, nikdy tady.',
-            'Access tokens (for private activity or higher limits) go in the .env file only, never here.',
-          )}
-        </span>
+        {admin && (
+          <span className="text-xs text-ink-3">
+            {t(
+              'Přístupové tokeny (pro soukromou aktivitu nebo vyšší limity) se zadávají jen v souboru .env, nikdy tady.',
+              'Access tokens (for private activity or higher limits) go in the .env file only, never here.',
+            )}
+          </span>
+        )}
       </div>
     </Panel>
   );
@@ -554,13 +570,13 @@ function Tutor({ me }: { me: MeDto }) {
         </div>
       ) : (
         <Notice tone="info" title={t('Vypnutý', 'Off')}>
-          {t('Zapíná se v souboru .env: buď ', 'It is enabled in the .env file: either ')}
-          <code>ANTHROPIC_API_KEY</code>
-          {t(' pro Claude, nebo ', ' for Claude, or ')}
-          <code>OPENAI_BASE_URL</code> + <code>AI_MODEL</code>
-          {t(
-            ' pro model běžící u tebe (Ollama, llama.cpp…). Pak restartuj kontejner.',
-            ' for a model running on your own hardware (Ollama, llama.cpp…). Then restart the container.',
+          {!me.account?.admin ? (
+            t(
+              'Tutora zapíná správce této instance, pro každý účet zvlášť.',
+              'The tutor is switched on by the administrator of this instance, account by account.',
+            )
+          ) : (
+            <TutorSetup />
           )}
         </Notice>
       )}
@@ -571,6 +587,22 @@ function Tutor({ me }: { me: MeDto }) {
         )}
       </p>
     </Panel>
+  );
+}
+
+function TutorSetup() {
+  const t = useT();
+  return (
+    <>
+      {t('Zapíná se v souboru .env: buď ', 'It is enabled in the .env file: either ')}
+      <code>ANTHROPIC_API_KEY</code>
+      {t(' pro Claude, nebo ', ' for Claude, or ')}
+      <code>OPENAI_BASE_URL</code> + <code>AI_MODEL</code>
+      {t(
+        ' pro model běžící u tebe (Ollama, llama.cpp…). Pak restartuj kontejner.',
+        ' for a model running on your own hardware (Ollama, llama.cpp…). Then restart the container.',
+      )}
+    </>
   );
 }
 
@@ -629,9 +661,243 @@ function Password() {
   );
 }
 
+/** The administrator's panel: who else has an account here. */
+function Users({ tutorConfigured }: { tutorConfigured: boolean }) {
+  const t = useT();
+  const client = useQueryClient();
+  const users = useUsers(true);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [tutor, setTutor] = useState(false);
+  // The row that is being given a new password, or asked about once more before removal.
+  const [open, setOpen] = useState<{ username: string; action: 'password' | 'remove' } | null>(null);
+  const [nextPassword, setNextPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ tone: 'good' | 'serious'; text: string } | null>(null);
+
+  const explain = (failure: unknown): string => {
+    if (failure instanceof ApiFailure && failure.code === 'username_taken')
+      return t('Takové jméno už tu je.', 'That name is taken.');
+    if (failure instanceof ApiFailure && failure.status === 400)
+      return t(
+        `Jméno má 2 až 32 znaků: malá písmena bez diakritiky, číslice, tečka, pomlčka nebo podtržítko. Heslo má aspoň ${MIN_PASSWORD_LENGTH} znaků.`,
+        `A name has 2 to 32 characters: lower-case letters, digits, a dot, a dash or an underscore. A password has at least ${MIN_PASSWORD_LENGTH} characters.`,
+      );
+    return t('Nepovedlo se. Podrobnosti jsou v logu serveru.', 'It failed. Details are in the server log.');
+  };
+  const act = async (action: () => Promise<unknown>, done: string | null): Promise<void> => {
+    setBusy(true);
+    setMessage(null);
+    try {
+      await action();
+      await client.invalidateQueries({ queryKey: ['users'] });
+      setOpen(null);
+      setNextPassword('');
+      if (done) setMessage({ tone: 'good', text: done });
+    } catch (failure) {
+      setMessage({ tone: 'serious', text: explain(failure) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const name = username.trim().toLowerCase();
+  const creatable = USERNAME_PATTERN.test(name) && name !== ADMIN_USERNAME && password.length >= MIN_PASSWORD_LENGTH;
+  const create = (event: FormEvent): void => {
+    event.preventDefault();
+    void act(
+      async () => {
+        await api.post('/api/admin/users', { username: name, password, tutor: tutorConfigured && tutor });
+        setUsername('');
+        setPassword('');
+        setTutor(false);
+      },
+      t(
+        `Uživatel ${name} je založený. Řekni mu jméno a heslo.`,
+        `User ${name} exists. Tell them the name and the password.`,
+      ),
+    );
+  };
+  const urlOf = (user: UserDto): string => `/api/admin/users/${encodeURIComponent(user.username)}`;
+
+  return (
+    <Panel
+      id="users"
+      title={t('Uživatelé', 'Users')}
+      lead={t(
+        'Ty jsi správce: účet „admin“ s heslem ze souboru .env. Každý další uživatel má vlastní účet a vlastní data – nevidí nic tvého ani cizího a začíná od nuly.',
+        'You are the administrator: the account “admin”, with the password from the .env file. Every other user has an account and data of their own — they see nothing of yours or anyone else’s, and start from nothing.',
+      )}
+    >
+      <form onSubmit={create} className="flex flex-wrap items-end gap-3">
+        <Field label={t('Jméno', 'Name')}>
+          <TextInput
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            className="w-44"
+            autoComplete="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            maxLength={32}
+          />
+        </Field>
+        {/* Shown as typed: it is a first password to hand over, and the user changes it. */}
+        <Field
+          label={t(
+            `Heslo (aspoň ${MIN_PASSWORD_LENGTH} znaků)`,
+            `Password (at least ${MIN_PASSWORD_LENGTH} characters)`,
+          )}
+        >
+          <TextInput
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            className="w-52"
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </Field>
+        <Button type="submit" busy={busy && open === null} disabled={!creatable}>
+          {t('Založit uživatele', 'Create the user')}
+        </Button>
+      </form>
+      {tutorConfigured && (
+        <Switch
+          checked={tutor}
+          onChange={setTutor}
+          label={t(
+            'Nový uživatel smí používat AI tutora (běží na tvůj API klíč)',
+            'The new user may use the AI tutor (it runs on your API key)',
+          )}
+        />
+      )}
+      {message && <Notice tone={message.tone}>{message.text}</Notice>}
+
+      {users.isError && <ErrorNote error={users.error} retry={() => void users.refetch()} />}
+      {users.data && users.data.length === 0 && (
+        <p className="text-sm text-ink-2">
+          {t(
+            'Zatím tu jsi jen ty. Dokud nikoho nezaložíš, přihlašuje se jen heslem jako dosud.',
+            'So far it is only you. Until you create somebody, signing in takes the password alone, as before.',
+          )}
+        </p>
+      )}
+      {users.data && users.data.length > 0 && (
+        <ul className="divide-y divide-border rounded-lg border border-border">
+          {users.data.map((user) => (
+            <li key={user.username} className="space-y-2 px-3 py-2.5">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                <span className="min-w-0 flex-1">
+                  <span className="font-mono text-sm font-medium">{user.username}</span>
+                  <span className="block text-xs text-ink-3">
+                    {t('založen', 'created')} {formatDateTime(user.createdAt, t.locale)}
+                    {' · '}
+                    {user.lastSeenAt === null
+                      ? t('ještě se nepřihlásil', 'has not signed in yet')
+                      : `${t('naposledy', 'last seen')} ${formatDateTime(user.lastSeenAt, t.locale)}`}
+                  </span>
+                </span>
+                {tutorConfigured && (
+                  <Switch
+                    checked={user.tutor}
+                    onChange={(next) => void act(() => api.put(urlOf(user), { tutor: next }), null)}
+                    label={t('AI tutor', 'AI tutor')}
+                  />
+                )}
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    setNextPassword('');
+                    setOpen(
+                      open?.username === user.username && open.action === 'password'
+                        ? null
+                        : { username: user.username, action: 'password' },
+                    );
+                  }}
+                >
+                  <KeyRound size={13} />
+                  {t('Nové heslo', 'New password')}
+                </Button>
+                <IconButton
+                  label={t('Smazat účet', 'Remove the account')}
+                  onClick={() =>
+                    setOpen(
+                      open?.username === user.username && open.action === 'remove'
+                        ? null
+                        : { username: user.username, action: 'remove' },
+                    )
+                  }
+                >
+                  <Trash2 size={15} />
+                </IconButton>
+              </div>
+              {open?.username === user.username && open.action === 'password' && (
+                <form
+                  className="flex flex-wrap items-end gap-3"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void act(
+                      () => api.post(`${urlOf(user)}/password`, { password: nextPassword }),
+                      t(
+                        `Heslo pro ${user.username} je nastavené; všude je odhlášený.`,
+                        `The password for ${user.username} is set; they are signed out everywhere.`,
+                      ),
+                    );
+                  }}
+                >
+                  <Field label={t(`Nové heslo pro ${user.username}`, `New password for ${user.username}`)}>
+                    <TextInput
+                      autoFocus
+                      value={nextPassword}
+                      onChange={(event) => setNextPassword(event.target.value)}
+                      className="w-52"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </Field>
+                  <Button type="submit" size="sm" busy={busy} disabled={nextPassword.length < MIN_PASSWORD_LENGTH}>
+                    {t('Nastavit', 'Set')}
+                  </Button>
+                </form>
+              )}
+              {open?.username === user.username && open.action === 'remove' && (
+                <div className="flex flex-wrap items-center gap-3 text-sm">
+                  <span className="min-w-0 flex-1 text-ink-2">
+                    {t(
+                      `Smazat účet ${user.username}? Hned ho to odhlásí a už se nepřihlásí. Jeho data se nemažou: zůstanou na serveru ve složce users/.deleted.`,
+                      `Remove the account ${user.username}? It is signed out at once and cannot sign in again. Its data is not erased: it stays on the server in users/.deleted.`,
+                    )}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    busy={busy}
+                    onClick={() =>
+                      void act(
+                        () => api.delete(urlOf(user)),
+                        t(`Účet ${user.username} je smazaný.`, `The account ${user.username} is removed.`),
+                      )
+                    }
+                  >
+                    {t('Smazat', 'Remove')}
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setOpen(null)}>
+                    {t('Nechat', 'Keep')}
+                  </Button>
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Panel>
+  );
+}
+
 function Data({ me }: { me: MeDto }) {
   const t = useT();
   const refresh = useRefresh();
+  // With sign-in switched off there is one learner, and that learner runs the instance.
+  const admin = me.account?.admin ?? !me.authRequired;
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const run = async (key: string, action: () => Promise<string>): Promise<void> => {
@@ -648,32 +914,45 @@ function Data({ me }: { me: MeDto }) {
   return (
     <Panel
       title={t('Data', 'Data')}
-      lead={t(
-        'Všechno je v jednom souboru SQLite na tvém serveru. Záloha se dělá sama jednou denně; návod na obnovu je v README.',
-        'Everything lives in one SQLite file on your server. A backup is taken automatically once a day; the README explains how to restore.',
-      )}
+      lead={
+        admin
+          ? t(
+              'Všechno je v souborech SQLite na tvém serveru: tvoje data v jednom, data každého dalšího uživatele ve vlastním. Záloha se dělá sama jednou denně; návod na obnovu je v README.',
+              "Everything lives in SQLite files on your server: your data in one, every other user's in one of their own. A backup is taken automatically once a day; the README explains how to restore.",
+            )
+          : t(
+              'Tvoje data jsou ve vlastním souboru SQLite na serveru, odděleně od ostatních uživatelů. Záloha se dělá sama jednou denně.',
+              "Your data lives in a SQLite file of its own on the server, apart from every other user's. A backup is taken automatically once a day.",
+            )
+      }
     >
       <div className="flex flex-wrap gap-2">
         <a
-          href="/api/admin/export"
+          href="/api/data/export"
           download
           className="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-surface-2 px-3.5 text-sm font-medium text-ink hover:bg-surface-3 hover:no-underline"
         >
           <Download size={14} />
           {t('Exportovat vše jako JSON', 'Export everything as JSON')}
         </a>
-        <Button
-          busy={busy === 'backup'}
-          onClick={() =>
-            void run(
-              'backup',
-              async () =>
-                `${t('Záloha uložena', 'Backup written')}: ${(await api.post<{ file: string }>('/api/admin/backup')).file}`,
-            )
-          }
-        >
-          {t('Zálohovat teď', 'Back up now')}
-        </Button>
+        {admin && (
+          <Button
+            busy={busy === 'backup'}
+            onClick={() =>
+              void run('backup', async () => {
+                const backup = await api.post<{ file: string; databases: number }>('/api/admin/backup');
+                return backup.databases > 1
+                  ? t(
+                      `Záloha uložena: ${backup.file} (u každé z ${backup.databases} databází)`,
+                      `Backup written: ${backup.file} (beside each of the ${backup.databases} databases)`,
+                    )
+                  : `${t('Záloha uložena', 'Backup written')}: ${backup.file}`;
+              })
+            }
+          >
+            {t('Zálohovat teď', 'Back up now')}
+          </Button>
+        )}
         <Button
           busy={busy === 'recompute'}
           title={t(
@@ -682,7 +961,7 @@ function Data({ me }: { me: MeDto }) {
           )}
           onClick={() =>
             void run('recompute', async () => {
-              const result = await api.post<{ skills: number; problems: number }>('/api/admin/recompute');
+              const result = await api.post<{ skills: number; problems: number }>('/api/data/recompute');
               refresh();
               return t(
                 `Přepočítáno z ${result.problems} úloh (${result.skills} dovedností).`,

@@ -1,10 +1,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { CONTENT_VERSION, EXAM_BLUEPRINTS, MILESTONES } from '@lemma/content';
-import { type MeDto, type StartRunRequest, ACTIVITY, ERROR_TYPES, isDay, isErrorType } from '@lemma/core';
+import {
+  type MeDto,
+  type StartRunRequest,
+  ACTIVITY,
+  ERROR_TYPES,
+  MIN_PASSWORD_LENGTH,
+  isDay,
+  isErrorType,
+} from '@lemma/core';
 import { type Context, Hono } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { z } from 'zod';
+import { type Learner, Accounts } from './accounts';
 import { AuthStore, LoginThrottle, SESSION_COOKIE } from './auth';
 import type { Config } from './config';
 import { type Db, backupDatabase, schemaVersion } from './db';
@@ -46,9 +55,12 @@ import type { Provider } from './services/tutor/types';
 export const APP_VERSION = '0.1.0';
 
 export interface AppDeps {
+  /** The main database: the administrator's, which also holds the accounts. */
   db: Db;
   config: Config;
   now?: () => number;
+  /** The accounts of this instance; created over `db` when not given. */
+  accounts?: Accounts;
   /** Replaces the configured AI provider; used by tests. */
   tutorProvider?: Provider;
 }
@@ -66,7 +78,11 @@ const StartRun = z.object({
   count: z.number().int().min(1).max(20).optional(),
 });
 
-type Env = { Bindings: { incoming?: { socket?: { remoteAddress?: string } } } };
+type Env = {
+  Bindings: { incoming?: { socket?: { remoteAddress?: string } } };
+  /** Whoever is asking; set for every route that requires a session. */
+  Variables: { learner: Learner };
+};
 
 const SECURITY_HEADERS: Record<string, string> = {
   // KaTeX positions glyphs with inline styles, hence 'unsafe-inline' for styles only.
@@ -94,9 +110,9 @@ const MIME: Record<string, string> = {
 };
 
 export function createApp(deps: AppDeps): Hono<Env> {
-  const { db, config } = deps;
-  const ctx: Ctx = { db, config, now: deps.now ?? (() => Date.now()) };
-  const auth = new AuthStore(db, config.sessionDays);
+  const { db: main, config } = deps;
+  const clock = deps.now ?? (() => Date.now());
+  const accounts = deps.accounts ?? new Accounts(main, config, clock);
   const throttle = new LoginThrottle();
   const app = new Hono<Env>();
 
@@ -108,8 +124,26 @@ export function createApp(deps: AppDeps): Hono<Env> {
     return c.env?.incoming?.socket?.remoteAddress ?? 'local';
   };
 
-  const isAuthenticated = (c: Context<Env>): boolean =>
-    config.authDisabled || auth.validateSession(getCookie(c, SESSION_COOKIE), ctx.now());
+  /** Who is asking. With sign-in switched off there is one learner, the administrator. */
+  const learnerOf = async (c: Context<Env>): Promise<Learner | undefined> =>
+    config.authDisabled ? accounts.admin() : accounts.bySession(getCookie(c, SESSION_COOKIE));
+
+  /**
+   * The data of whoever is asking. Handlers get their context here and nowhere else: there
+   * is deliberately no database in scope that a route could reach for by mistake.
+   */
+  const ctxOf = (c: Context<Env>): Ctx => c.get('learner').ctx;
+
+  const startSession = (c: Context<Env>, learner: Learner): void => {
+    const session = accounts.auth.createSession(clock(), c.req.header('user-agent'), accounts.sessionName(learner));
+    setCookie(c, SESSION_COOKIE, session.token, {
+      httpOnly: true,
+      sameSite: 'Lax',
+      secure: config.cookieSecure,
+      path: '/',
+      expires: new Date(session.expiresAt),
+    });
+  };
 
   // ---- cross-cutting -----------------------------------------------------------------
 
@@ -153,7 +187,17 @@ export function createApp(deps: AppDeps): Hono<Env> {
 
   app.use('/api/*', async (c, next) => {
     const open = c.req.path === '/api/me' || c.req.path === '/api/auth/login' || c.req.path === '/api/auth/logout';
-    if (!open && !isAuthenticated(c)) throw new HttpError(401, 'unauthenticated', 'sign in first');
+    if (!open) {
+      const learner = await learnerOf(c);
+      if (!learner) throw new HttpError(401, 'unauthenticated', 'sign in first');
+      c.set('learner', learner);
+    }
+    await next();
+  });
+
+  // Everything under /api/admin belongs to the administrator alone.
+  app.use('/api/admin/*', async (c, next) => {
+    if (!c.get('learner').admin) throw new HttpError(403, 'forbidden', 'only the administrator may do this');
     await next();
   });
 
@@ -169,19 +213,23 @@ export function createApp(deps: AppDeps): Hono<Env> {
   // ---- health and session ------------------------------------------------------------
 
   app.get('/healthz', (c) => {
-    db.prepare('SELECT 1').get();
-    return c.json({ status: 'ok', version: APP_VERSION, schema: schemaVersion(db), content: CONTENT_VERSION });
+    main.prepare('SELECT 1').get();
+    return c.json({ status: 'ok', version: APP_VERSION, schema: schemaVersion(main), content: CONTENT_VERSION });
   });
 
-  app.get('/api/me', (c) => {
-    const authenticated = isAuthenticated(c);
-    const tutor = deps.tutorProvider ? { enabled: true, provider: 'test', model: 'test' } : tutorStatus(config);
+  app.get('/api/me', async (c) => {
+    const learner = await learnerOf(c);
+    const available = deps.tutorProvider ? { enabled: true, provider: 'test', model: 'test' } : tutorStatus(config);
+    // Before sign-in the page still needs a language and a theme; the administrator's serve
+    // as the instance's. Nothing else personal is revealed.
+    const ctx = (learner ?? accounts.admin()).ctx;
     const me: MeDto = {
-      authenticated,
+      authenticated: learner !== undefined,
       authRequired: !config.authDisabled,
-      onboarded: authenticated ? isOnboarded(ctx) : false,
-      // Settings are personal; nothing but the UI language is revealed before sign-in.
-      settings: authenticated
+      account: learner ? { username: learner.username, admin: learner.admin } : null,
+      hasUsers: accounts.hasUsers(),
+      onboarded: learner ? isOnboarded(ctx) : false,
+      settings: learner
         ? getSettings(ctx)
         : {
             ...getSettings(ctx),
@@ -196,75 +244,81 @@ export function createApp(deps: AppDeps): Hono<Env> {
       version: APP_VERSION,
       contentVersion: CONTENT_VERSION,
       today: today(ctx),
-      tutor: authenticated ? tutor : { enabled: false, provider: null, model: null },
+      tutor: learner?.tutor ? available : { enabled: false, provider: null, model: null },
     };
     return c.json(me);
   });
 
   app.post('/api/auth/login', async (c) => {
     const client = clientAddress(c);
-    const now = ctx.now();
+    const now = clock();
     const wait = throttle.retryAfter(client, now);
     if (wait > 0) {
       c.header('Retry-After', String(Math.ceil(wait / 1000)));
       throw new HttpError(429, 'too_many_attempts', `too many attempts; try again in ${Math.ceil(wait / 1000)} s`);
     }
-    const { password } = await body(c);
-    if (typeof password !== 'string' || !auth.checkPassword(password)) {
+    // No name is the administrator: an instance without users signs in with a password alone.
+    const { username, password } = await body(c);
+    const learner =
+      typeof password === 'string'
+        ? await accounts.signIn(typeof username === 'string' ? username : '', password)
+        : undefined;
+    if (!learner) {
       throttle.recordFailure(client, now);
       log.warn('failed login', { client });
-      throw new HttpError(401, 'bad_password', 'wrong password');
+      throw new HttpError(401, 'bad_password', 'wrong name or password');
     }
     throttle.recordSuccess(client);
-    const session = auth.createSession(now, c.req.header('user-agent'));
-    setCookie(c, SESSION_COOKIE, session.token, {
-      httpOnly: true,
-      sameSite: 'Lax',
-      secure: config.cookieSecure,
-      path: '/',
-      expires: new Date(session.expiresAt),
-    });
+    startSession(c, learner);
     return c.json({ ok: true });
   });
 
   app.post('/api/auth/logout', (c) => {
-    auth.deleteSession(getCookie(c, SESSION_COOKIE));
+    accounts.auth.deleteSession(getCookie(c, SESSION_COOKIE));
     deleteCookie(c, SESSION_COOKIE, { path: '/' });
     return c.json({ ok: true });
   });
 
+  /** One's own password; the administrator sets other people's under /api/admin/users. */
   app.post('/api/auth/password', async (c) => {
+    const learner = c.get('learner');
+    const own = accounts.passwordOf(learner);
     const { current, next } = await body(c);
-    if (typeof next !== 'string' || next.length < 8)
-      throw badRequest('the new password must have at least 8 characters');
-    if (!config.authDisabled && (typeof current !== 'string' || !auth.checkPassword(current)))
+    if (typeof next !== 'string' || next.length < MIN_PASSWORD_LENGTH)
+      throw badRequest(`the new password must have at least ${MIN_PASSWORD_LENGTH} characters`);
+    if (!config.authDisabled && (typeof current !== 'string' || !own.checkPassword(current)))
       throw new HttpError(401, 'bad_password', 'wrong current password');
-    const now = ctx.now();
-    auth.setPassword(next, now);
-    // Changing the password signs every other device out.
-    auth.deleteAllSessions();
-    const session = auth.createSession(now, c.req.header('user-agent'));
-    setCookie(c, SESSION_COOKIE, session.token, {
-      httpOnly: true,
-      sameSite: 'Lax',
-      secure: config.cookieSecure,
-      path: '/',
-      expires: new Date(session.expiresAt),
-    });
+    own.setPassword(next, clock());
+    // Changing the password signs every other device of this account out.
+    accounts.auth.deleteSessionsOf(accounts.sessionName(learner));
+    startSession(c, learner);
     return c.json({ ok: true });
   });
 
   // ---- settings ----------------------------------------------------------------------
 
-  app.get('/api/settings', (c) => c.json(getSettings(ctx)));
+  // A Forgejo address makes the server call a host of the learner's choosing, so only the
+  // administrator may name one. Anyone may name a GitHub account: that host is fixed.
+  const settingsPatch = async (c: Context<Env>): Promise<Record<string, unknown>> => {
+    const patch = await body(c);
+    if (!c.get('learner').admin) {
+      delete patch.forgejoUrl;
+      delete patch.forgejoUser;
+    }
+    return patch;
+  };
+
+  app.get('/api/settings', (c) => c.json(getSettings(ctxOf(c))));
   app.put('/api/settings', async (c) => {
-    const settings = updateSettings(ctx, await body(c));
+    const ctx = ctxOf(c);
+    const settings = updateSettings(ctx, await settingsPatch(c));
     // The plan depends on the current chapter, tests and session length.
     regeneratePlan(ctx, settings.sessionMinutes);
     return c.json(settings);
   });
   app.post('/api/onboarding', async (c) => {
-    const settings = updateSettings(ctx, await body(c));
+    const ctx = ctxOf(c);
+    const settings = updateSettings(ctx, await settingsPatch(c));
     setOnboarded(ctx);
     regeneratePlan(ctx, settings.sessionMinutes);
     return c.json(settings);
@@ -272,85 +326,89 @@ export function createApp(deps: AppDeps): Hono<Env> {
 
   // ---- learning ----------------------------------------------------------------------
 
-  app.get('/api/dashboard', (c) => c.json(dashboard(ctx)));
-  app.get('/api/graph', (c) => c.json(graph(ctx)));
-  app.get('/api/concepts/:id', (c) => c.json(conceptDetail(ctx, c.req.param('id'))));
+  app.get('/api/dashboard', (c) => c.json(dashboard(ctxOf(c))));
+  app.get('/api/graph', (c) => c.json(graph(ctxOf(c))));
+  app.get('/api/concepts/:id', (c) => c.json(conceptDetail(ctxOf(c), c.req.param('id'))));
 
-  app.get('/api/lessons/:id', (c) => c.json(openLesson(ctx, c.req.param('id'))));
+  app.get('/api/lessons/:id', (c) => c.json(openLesson(ctxOf(c), c.req.param('id'))));
   app.post('/api/lessons/:id/step', async (c) => {
     const { step } = await body(c);
     if (typeof step !== 'number') throw badRequest('step is required');
-    return c.json(completeStep(ctx, c.req.param('id'), step));
+    return c.json(completeStep(ctxOf(c), c.req.param('id'), step));
   });
 
   app.post('/api/practice/start', async (c) => {
     const request = StartRun.safeParse(await body(c));
     if (!request.success) throw badRequest('the practice request is not valid');
-    return c.json(startRun(ctx, request.data as StartRunRequest));
+    return c.json(startRun(ctxOf(c), request.data as StartRunRequest));
   });
-  app.get('/api/runs/:id', (c) => c.json(getRun(ctx, c.req.param('id'))));
-  app.post('/api/runs/:id/next', (c) => c.json(nextInRun(ctx, c.req.param('id'))));
+  app.get('/api/runs/:id', (c) => c.json(getRun(ctxOf(c), c.req.param('id'))));
+  app.post('/api/runs/:id/next', (c) => c.json(nextInRun(ctxOf(c), c.req.param('id'))));
 
-  app.get('/api/problems/:id', (c) => c.json(problemDto(ctx, getProblemRow(ctx, c.req.param('id')))));
+  app.get('/api/problems/:id', (c) => c.json(problemDto(ctxOf(c), getProblemRow(ctxOf(c), c.req.param('id')))));
   app.post('/api/problems/:id/answer', async (c) => {
     const { input, seconds, confidence } = await body(c);
     if (typeof input !== 'string') throw badRequest('input is required');
     return c.json(
-      submitAnswer(ctx, c.req.param('id'), {
+      submitAnswer(ctxOf(c), c.req.param('id'), {
         input,
         seconds: typeof seconds === 'number' ? seconds : undefined,
         confidence: confidence === 'sure' || confidence === 'think' || confidence === 'guess' ? confidence : undefined,
       }),
     );
   });
-  app.post('/api/problems/:id/hint', (c) => c.json(takeHint(ctx, c.req.param('id'))));
-  app.get('/api/problems/:id/model', (c) => c.json(selfModel(ctx, c.req.param('id'))));
+  app.post('/api/problems/:id/hint', (c) => c.json(takeHint(ctxOf(c), c.req.param('id'))));
+  app.get('/api/problems/:id/model', (c) => c.json(selfModel(ctxOf(c), c.req.param('id'))));
   app.post('/api/problems/:id/reveal', async (c) => {
     const { seconds } = await body(c);
-    return c.json(revealSolution(ctx, c.req.param('id'), typeof seconds === 'number' ? seconds : undefined));
+    return c.json(revealSolution(ctxOf(c), c.req.param('id'), typeof seconds === 'number' ? seconds : undefined));
   });
   app.post('/api/problems/:id/classify', async (c) => {
     const { errorType } = await body(c);
     if (!isErrorType(errorType)) throw badRequest('unknown error type');
-    return c.json(classifyError(ctx, c.req.param('id'), errorType));
+    return c.json(classifyError(ctxOf(c), c.req.param('id'), errorType));
   });
 
   app.get('/api/plan', (c) => {
     const minutes = Number(c.req.query('minutes'));
     return c.json(
-      getPlan(ctx, Number.isFinite(minutes) && minutes >= 5 ? Math.min(180, Math.round(minutes)) : undefined),
+      getPlan(ctxOf(c), Number.isFinite(minutes) && minutes >= 5 ? Math.min(180, Math.round(minutes)) : undefined),
     );
   });
   app.post('/api/plan/regenerate', async (c) => {
     const { minutes } = await body(c);
     return c.json(
-      regeneratePlan(ctx, typeof minutes === 'number' ? Math.min(180, Math.max(5, Math.round(minutes))) : undefined),
+      regeneratePlan(
+        ctxOf(c),
+        typeof minutes === 'number' ? Math.min(180, Math.max(5, Math.round(minutes))) : undefined,
+      ),
     );
   });
-  app.post('/api/plan/blocks/:id/start', (c) => c.json(startBlock(ctx, c.req.param('id'))));
+  app.post('/api/plan/blocks/:id/start', (c) => c.json(startBlock(ctxOf(c), c.req.param('id'))));
 
   // ---- activity and insight ----------------------------------------------------------
 
   app.get('/api/activity/day/:day', (c) => {
     const day = c.req.param('day');
     if (!isDay(day)) throw badRequest('day must be YYYY-MM-DD');
-    return c.json(dayDetail(ctx, day));
+    return c.json(dayDetail(ctxOf(c), day));
   });
   app.post('/api/activity/lab', async (c) => {
     const { tool, seconds } = await body(c);
     if (typeof tool !== 'string' || !/^[a-z]{3,20}$/.test(tool)) throw badRequest('tool is required');
     // A Lab session counts once per tool per day, and only after real time spent with it.
+    const ctx = ctxOf(c);
     const enough = typeof seconds === 'number' && seconds >= ACTIVITY.LAB_MIN_SECONDS;
-    const already = db
+    const already = ctx.db
       .prepare(`SELECT 1 FROM events WHERE type = 'lab' AND day = ? AND tool = ?`)
       .get(today(ctx), tool);
     if (enough && !already) addEvent(ctx, { type: 'lab', points: ACTIVITY.LAB, tool });
     return c.json({ counted: enough && !already });
   });
-  app.get('/api/errors', (c) => c.json(errorSummary(ctx)));
-  app.get('/api/analytics', (c) => c.json(analytics(ctx)));
+  app.get('/api/errors', (c) => c.json(errorSummary(ctxOf(c))));
+  app.get('/api/analytics', (c) => c.json(analytics(ctxOf(c))));
   app.get('/api/milestones', (c) => {
-    const achieved = achievedMilestones(ctx);
+    const achieved = achievedMilestones(ctxOf(c));
     return c.json(
       [...MILESTONES]
         .sort((a, b) => b.weight - a.weight)
@@ -364,24 +422,24 @@ export function createApp(deps: AppDeps): Hono<Env> {
   // ---- exams -------------------------------------------------------------------------
 
   app.get('/api/exam-blueprints', (c) => c.json(EXAM_BLUEPRINTS));
-  app.get('/api/exams', (c) => c.json(listExams(ctx)));
+  app.get('/api/exams', (c) => c.json(listExams(ctxOf(c))));
   app.post('/api/exams', async (c) => {
     const { blueprint, topics, concepts } = await body(c);
     if (typeof blueprint !== 'string') throw badRequest('blueprint is required');
     return c.json(
-      createExam(ctx, {
+      createExam(ctxOf(c), {
         blueprint,
         topics: Array.isArray(topics) ? topics.filter((n): n is number => typeof n === 'number') : undefined,
         concepts: Array.isArray(concepts) ? concepts.filter((s): s is string => typeof s === 'string') : undefined,
       }),
     );
   });
-  app.get('/api/exams/:id', (c) => c.json(getExam(ctx, c.req.param('id'))));
+  app.get('/api/exams/:id', (c) => c.json(getExam(ctxOf(c), c.req.param('id'))));
   app.put('/api/exams/:id/items/:index', async (c) => {
     const { input, seconds } = await body(c);
     return c.json(
       saveExamAnswer(
-        ctx,
+        ctxOf(c),
         c.req.param('id'),
         Number(c.req.param('index')),
         typeof input === 'string' ? input : '',
@@ -389,30 +447,33 @@ export function createApp(deps: AppDeps): Hono<Env> {
       ),
     );
   });
-  app.post('/api/exams/:id/finish', (c) => c.json(finishExam(ctx, c.req.param('id'))));
-  app.post('/api/exams/:id/refresh', (c) => c.json(refreshExamReport(ctx, c.req.param('id'))));
+  app.post('/api/exams/:id/finish', (c) => c.json(finishExam(ctxOf(c), c.req.param('id'))));
+  app.post('/api/exams/:id/refresh', (c) => c.json(refreshExamReport(ctxOf(c), c.req.param('id'))));
 
   // ---- FIT, missions, forge ----------------------------------------------------------
 
-  app.get('/api/fit', (c) => c.json(fitOverview(ctx)));
-  app.get('/api/missions', (c) => c.json(missions(ctx)));
-  app.put('/api/missions/:id', async (c) => c.json(updateMission(ctx, c.req.param('id'), await body(c))));
-  app.get('/api/forge', (c) => c.json(forgeOverview(ctx)));
+  app.get('/api/fit', (c) => c.json(fitOverview(ctxOf(c))));
+  app.get('/api/missions', (c) => c.json(missions(ctxOf(c))));
+  app.put('/api/missions/:id', async (c) => c.json(updateMission(ctxOf(c), c.req.param('id'), await body(c))));
+  app.get('/api/forge', (c) => c.json(forgeOverview(ctxOf(c))));
   app.post('/api/forge/refresh', async (c) => {
+    const ctx = ctxOf(c);
     await refreshForge(ctx, true);
     return c.json(forgeOverview(ctx));
   });
 
-  registerTutorRoutes(app as unknown as Hono, ctx, body as never, deps.tutorProvider);
-
-  // ---- administration ----------------------------------------------------------------
-
-  app.post('/api/admin/recompute', (c) => c.json(replayAll(ctx)));
-  app.post('/api/admin/backup', async (c) => {
-    const file = await backupDatabase(db, config.dataDir, `manual-${today(ctx)}-${Date.now()}`, 0);
-    return c.json({ file: path.basename(file) });
+  registerTutorRoutes(app as unknown as Hono, {
+    ctxOf: ctxOf as never,
+    allowed: ((c: Context<Env>) => c.get('learner').tutor) as never,
+    body: body as never,
+    provider: deps.tutorProvider,
   });
-  app.get('/api/admin/export', (c) => {
+
+  // ---- one's own data ----------------------------------------------------------------
+
+  app.post('/api/data/recompute', (c) => c.json(replayAll(ctxOf(c))));
+  app.get('/api/data/export', (c) => {
+    const ctx = ctxOf(c);
     const tables = [
       'settings',
       'runs',
@@ -429,15 +490,55 @@ export function createApp(deps: AppDeps): Hono<Env> {
       'tutor_messages',
     ];
     const dump: Record<string, unknown[]> = {};
-    for (const table of tables) dump[table] = db.prepare(`SELECT * FROM ${table}`).all();
+    for (const table of tables) dump[table] = ctx.db.prepare(`SELECT * FROM ${table}`).all();
     c.header('Content-Disposition', `attachment; filename="lemma-export-${today(ctx)}.json"`);
     return c.json({
       exportedAt: new Date(ctx.now()).toISOString(),
       version: APP_VERSION,
-      schema: schemaVersion(db),
+      schema: schemaVersion(ctx.db),
       content: CONTENT_VERSION,
       tables: dump,
     });
+  });
+
+  // ---- administration ----------------------------------------------------------------
+
+  /** A backup of every learner's database, each written beside the database it copies. */
+  app.post('/api/admin/backup', async (c) => {
+    const label = `manual-${today(ctxOf(c))}-${clock()}`;
+    const files: string[] = [];
+    for (const learner of await accounts.everyone())
+      files.push(await backupDatabase(learner.ctx.db, learner.ctx.config.dataDir, label, 0));
+    return c.json({ file: path.basename(files[0]!), databases: files.length });
+  });
+
+  app.get('/api/admin/users', (c) => c.json(accounts.list()));
+  app.post('/api/admin/users', async (c) => {
+    if (config.authDisabled)
+      throw new HttpError(
+        409,
+        'auth_disabled',
+        'sign-in is switched off here (AUTH_DISABLED=1), so no other account could be used',
+      );
+    const { username, password, tutor } = await body(c);
+    if (typeof username !== 'string' || typeof password !== 'string')
+      throw badRequest('a username and a password are required');
+    return c.json(await accounts.create(username, password, tutor === true));
+  });
+  app.put('/api/admin/users/:username', async (c) => {
+    const { tutor } = await body(c);
+    if (typeof tutor !== 'boolean') throw badRequest('tutor must be true or false');
+    return c.json(accounts.setTutor(c.req.param('username'), tutor));
+  });
+  app.post('/api/admin/users/:username/password', async (c) => {
+    const { password } = await body(c);
+    if (typeof password !== 'string') throw badRequest('a password is required');
+    await accounts.setPassword(c.req.param('username'), password);
+    return c.json({ ok: true });
+  });
+  app.delete('/api/admin/users/:username', async (c) => {
+    await accounts.remove(c.req.param('username'));
+    return c.json({ ok: true });
   });
 
   app.all('/api/*', () => {
@@ -468,9 +569,10 @@ export function createApp(deps: AppDeps): Hono<Env> {
 }
 
 /**
- * Create the password from the environment on first start. With LEMMA_PASSWORD_RESET=1
- * the stored password is replaced as well and every session is signed out: whoever can
- * edit `.env` on the server owns the instance anyway, so this is the way back in.
+ * Create the administrator's password from the environment on first start. With
+ * LEMMA_PASSWORD_RESET=1 the stored password is replaced as well and the administrator is
+ * signed out everywhere: whoever can edit `.env` on the server owns the instance anyway,
+ * so this is the way back in. Other accounts and their sessions are left alone.
  */
 export function ensurePassword(db: Db, config: Config, now: number): void {
   const auth = new AuthStore(db, config.sessionDays);
@@ -486,9 +588,9 @@ export function ensurePassword(db: Db, config: Config, now: number): void {
     if (config.initialPassword.length < 8)
       throw new Error(`LEMMA_PASSWORD_RESET=1 needs LEMMA_PASSWORD to be set to at least 8 characters${arrived}`);
     auth.setPassword(config.initialPassword, now);
-    auth.deleteAllSessions();
+    auth.deleteSessionsOf(null);
     log.warn(
-      'password reset from LEMMA_PASSWORD and all sessions signed out; remove LEMMA_PASSWORD_RESET from .env now',
+      'administrator password reset from LEMMA_PASSWORD and the administrator signed out everywhere; remove LEMMA_PASSWORD_RESET from .env now',
     );
     return;
   }
@@ -499,5 +601,5 @@ export function ensurePassword(db: Db, config: Config, now: number): void {
     );
   }
   auth.setPassword(config.initialPassword, now);
-  log.info('password set from LEMMA_PASSWORD; change it in Settings and remove it from .env if you like');
+  log.info('administrator password set from LEMMA_PASSWORD; change it in Settings and remove it from .env if you like');
 }

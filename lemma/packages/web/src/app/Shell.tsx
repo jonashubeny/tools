@@ -29,6 +29,7 @@ import { IconButton, Kbd } from '../ui';
 import { api } from './api';
 import { CommandPalette } from './CommandPalette';
 import { useT } from './i18n';
+import { forgetLearner } from './queries';
 import { currentTheme } from './theme';
 
 interface NavItem {
@@ -165,6 +166,15 @@ export function Shell({ me, children }: { me: MeDto; children: ReactNode }) {
             <span className="flex-1 text-left">{t('Tutor', 'Tutor')}</span>
           </button>
         )}
+        {/* Worth saying only where there is more than one account to be signed in to. */}
+        {me.hasUsers && me.account && (
+          <div
+            className="truncate px-2 pt-1 font-mono text-xs text-ink-3"
+            title={t('Přihlášený účet', 'Signed-in account')}
+          >
+            {me.account.username}
+          </div>
+        )}
         <div className="flex items-center justify-between pt-1">
           <NavLink
             to="/settings"
@@ -195,7 +205,7 @@ export function Shell({ me, children }: { me: MeDto; children: ReactNode }) {
               <IconButton
                 label={t('Odhlásit se', 'Sign out')}
                 onClick={() => {
-                  void api.post('/api/auth/logout').then(() => client.invalidateQueries());
+                  void api.post('/api/auth/logout').then(() => forgetLearner(client));
                 }}
               >
                 <LogOut size={16} />

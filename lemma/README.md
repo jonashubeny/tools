@@ -3,6 +3,8 @@
 A self-hosted mathematics laboratory for one learner: the second-year syllabus of a Czech
 IT-focused secondary school, taught for understanding, with a model of what you actually
 know, a log of the errors you actually make, and a long view towards studying at FIT VUT.
+Whoever runs it can give friends [accounts of their own](#accounts); each of them is then
+that one learner, with data nobody else sees.
 
 It is not a course platform and not a quiz game. The thing it optimises is the next useful
 piece of work: what to do today, why that, and what the evidence says about how well you
@@ -27,10 +29,31 @@ The interface is in Czech and English. All data stays in one SQLite file on your
 > done, what is thin and what is missing is listed honestly in
 > [`docs/roadmap.md`](docs/roadmap.md#current-state).
 
+## Requirements
+
+To run it:
+
+| What | Needed |
+|---|---|
+| Container engine | Docker Engine with the Compose plugin — `docker compose version` should answer with v2 or newer. Podman with `podman-compose` works as well. |
+| Machine | Anything that runs Linux containers on x86-64. 64-bit ARM should work — the image carries the SQLite driver's arm64 binary — but has not been tried. 32-bit ARM (an older Raspberry Pi OS) will not: the driver has no binary for it. |
+| Memory | About 200 MB while running (150 MB idle, 190 MB at the most with seventy days of history). Building the image peaks at about 530 MB, in the dependency install, so have 1 GB free for the first start. |
+| Disk | About 250 MB for the image, and about 650 MB in all while it is being built. The data is small: 2 MB for 750 solved problems, and fifteen times that with the daily backups. |
+| Network | Only for the build: the Node base image from Docker Hub and about 80 MB of packages from the npm registry. Running needs no outside connection — nothing is loaded from a CDN. The AI tutor and the GitHub/Forgejo view call out, and only once you configure them. |
+| Port | One TCP port on the host: 8000, or whatever `LEMMA_PORT` says. |
+| Browser | Chrome 111, Safari 16.4, Firefox 128, or newer — the baseline of Tailwind CSS 4, which the interface is built with. It has been looked at in Chromium only. |
+
+To work on the code: Node 22.12 or newer with npm, and about 300 MB for `node_modules`. No
+compiler is needed; the SQLite driver comes prebuilt.
+
+The numbers were measured on the development machine (2 cores, 4 GB of memory). Lemma has
+been run there with Podman 5.8.7, `podman-compose` 1.6.0 and Docker Compose 5.6.0; Docker
+Engine itself has not run it yet, and [`docs/roadmap.md`](docs/roadmap.md#current-state)
+says what that leaves untested.
+
 ## Quick start
 
-You need Docker Engine with the Compose plugin — `docker compose version` should answer
-with v2 or newer. Nothing else.
+Everything below is run in this directory, the one with `compose.yaml`.
 
 ```sh
 cp .env.example .env
@@ -39,7 +62,15 @@ docker compose up -d --build
 ```
 
 Open <http://localhost:8000> and sign in with the password. The first build takes a few
-minutes; later starts take a second.
+minutes; later starts take a second. That password is the administrator's: the account
+that exists from the first start, and the only one that can [create others](#accounts).
+
+**That address answers on the Docker host itself and nowhere else.** By default the port
+is published on the host's `127.0.0.1` only, so that nothing is exposed by accident. To
+open Lemma from another device, set `LEMMA_BIND=0.0.0.0` in `.env`, run
+`docker compose up -d` again and use `http://<address of the host>:8000` — or, better, put
+it behind HTTPS as described below. The app's log says which of the two applies, and
+`LEMMA_PORT` moves it off 8000 if something else on the host already has that port.
 
 Start with a plain password — letters, digits, `-`, `_`, `.` — and change it to anything
 you like in Settings: inside `.env`, `$` and `#` have a meaning of their own
@@ -50,15 +81,36 @@ Podman works as well, with `podman-compose` in place of `docker compose`; see
 Podman's `podman-docker` wrapper: if `docker --version` answers `podman version …`, that
 section is the one for you.
 
-The container is published on `127.0.0.1` only. To reach it from other devices on your
-network, set `LEMMA_BIND=0.0.0.0` in `.env` and run `docker compose up -d` again — or,
-better, put it behind HTTPS as described below.
-
 ```sh
 docker compose logs -f            # JSON lines, one per event
 docker compose ps                 # shows "healthy" once /healthz answers
 docker compose down               # stops it; your data stays in the volume
 ```
+
+### If the build cannot download
+
+The build installs about 80 MB of packages from the npm registry. When that step ends in
+`npm error network read ETIMEDOUT`, or another network error, the connection between
+Docker's build containers and the internet gave way on that host — the checkout is fine.
+
+1. **Run the same command again.** What was downloaded is kept between builds, and each
+   build makes three attempts that only fetch what is still missing.
+2. **If it keeps failing, build on the host's own network**, which goes around Docker's
+   bridge, and start the result:
+
+   ```sh
+   docker build --network host -t lemma:local .
+   docker compose up -d --no-build
+   ```
+
+3. **To find the cause**, try one download both ways. If only the first of these fails,
+   it is the bridge network — a common reason is an MTU of 1500 on `docker0` where the
+   host's uplink allows less (`ip link` shows both).
+
+   ```sh
+   docker run --rm node:22-bookworm-slim npm pack typescript --pack-destination /tmp
+   docker run --rm --network host node:22-bookworm-slim npm pack typescript --pack-destination /tmp
+   ```
 
 ## Configuration
 
@@ -67,7 +119,7 @@ Only the password is required.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `LEMMA_PASSWORD` | — | Sign-in password, read **once** on first start and then stored hashed. Change it later in Settings. |
+| `LEMMA_PASSWORD` | — | The administrator's password, read **once** on first start and then stored hashed. Change it later in Settings. |
 | `LEMMA_BIND`, `LEMMA_PORT` | `127.0.0.1`, `8000` | Where the container is published on the host. |
 | `COOKIE_SECURE`, `TRUST_PROXY` | `0` | Set both to `1` behind HTTPS (reverse proxy or tunnel). |
 | `LEMMA_TIMEZONE`, `DAY_START_HOUR` | `Europe/Prague`, `4` | When a study day begins — a session after midnight still counts for the evening. |
@@ -77,9 +129,36 @@ Only the password is required.
 
 ### Forgotten password
 
-Put a new password in `LEMMA_PASSWORD`, add `LEMMA_PASSWORD_RESET=1`, restart once, then
-remove that line again. Every session is signed out. Whoever can edit `.env` on the server
-owns the instance anyway, so this is deliberately the only way back in.
+The administrator's: put a new password in `LEMMA_PASSWORD`, add `LEMMA_PASSWORD_RESET=1`,
+restart once, then remove that line again. The administrator is signed out everywhere.
+Whoever can edit `.env` on the server owns the instance anyway, so this is deliberately the
+only way back in. A user's: the administrator sets a new one in Settings.
+
+## Accounts
+
+There is always one account, the **administrator**: the name `admin` and the password from
+`LEMMA_PASSWORD`. An instance with nobody else signs in with the password alone, exactly
+as a single-user Lemma does.
+
+The administrator can create more accounts in **Settings → Users**: a name and a first
+password, to be passed on and changed by its owner. From then on the sign-in page asks for
+a name as well. The same panel gives a user a new password, or removes the account.
+
+- **A user is a learner, not a second administrator.** They get the whole application —
+  plan, practice, exams, Error Lab, settings, their own export — and nothing of anybody
+  else's: no shared progress, no leaderboard, no list of who else is here.
+- **Every account has a database of its own** (see [Your data](#your-data)), so one
+  learner's work cannot leak into another's, and each has separate daily backups.
+- **The AI tutor runs on your API key**, so a new account does not get it until you switch
+  it on for that account in the same panel.
+- **Your integrations stay yours.** `GITHUB_USERNAME`, the tokens and the Forgejo settings
+  from `.env` apply to the administrator only. A user may name their own GitHub account;
+  a Forgejo address, which makes the server call a host, is the administrator's to set.
+- **Removing an account** signs it out at once and moves its data to
+  `/data/users/.deleted/<name>-<time>/`. Nothing is erased until you delete that directory.
+
+A name has 2 to 32 characters: lower-case letters, digits, dots, dashes and underscores.
+`AUTH_DISABLED=1` leaves one learner, the administrator, and no use for other accounts.
 
 ## Putting it on the network
 
@@ -120,11 +199,17 @@ requests are refused as cross-site.
 Everything personal lives in the volume `lemma-data`:
 
 ```
-/data/lemma.sqlite                    the database (attempts, the event log, settings)
+/data/lemma.sqlite                    the administrator's database (attempts, the event log,
+                                      settings) — and the list of accounts
 /data/backups/lemma-YYYY-MM-DD.sqlite one consistent copy per study day, the last 14 kept
 /data/backups/lemma-before-schema-…   taken automatically before a schema migration
 /data/backups/lemma-manual-…          taken with "Back up now" in Settings
+/data/users/<name>/lemma.sqlite       one database for every other account,
+/data/users/<name>/backups/…          each with backups of its own, on the same schedule
 ```
+
+A user's database is a complete Lemma database, password included. Everything below works
+for one of them with `/data/users/<name>` in place of `/data`.
 
 The container itself is read-only and holds nothing worth keeping. The backup of a study
 day is written once and never replaced, so a restore — or an accident — cannot overwrite
@@ -158,6 +243,13 @@ docker compose up -d
 ```
 
 The password travels with the database; `LEMMA_PASSWORD` in the new `.env` is not used.
+The other accounts are listed in the administrator's database and their data is the
+`/data/users` directory, so an instance with users moves as a whole volume.
+
+**Turn a database into an account** — somebody's own single-user Lemma, or a user's
+database from another instance: put the file at `/data/users/<name>/lemma.sqlite`, then
+create the user `<name>` in Settings. The account opens with that data, and with the
+password you gave it there.
 
 These one-off containers run as the same user as the app, so what they write belongs to
 it. A database or data directory which that user may not write — a file copied in by root,

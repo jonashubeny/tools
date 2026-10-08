@@ -8,6 +8,8 @@ import { isValidTimeZone } from '@lemma/core';
 export interface Config {
   host: string;
   port: number;
+  /** Where Compose publishes the container's port on the host (LEMMA_BIND, LEMMA_PORT); null outside Compose. */
+  published: { bind: string; port: number } | null;
   dataDir: string;
   /** Directory with the built web app; empty when the API runs alone (development). */
   webDir: string;
@@ -53,6 +55,29 @@ const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 const effortOf = (value: string | undefined): Config['ai']['effort'] =>
   (EFFORTS as readonly string[]).includes(value ?? '') ? (value as Config['ai']['effort']) : 'medium';
 
+/**
+ * In a container the app listens on 0.0.0.0:8000 whatever the host publishes, and that
+ * line of the log reads as if the app were open to everyone. What a person needs to know
+ * is the address on the host, and whether another machine can reach it at all.
+ */
+export function publishedNote(config: Config): { msg: string; url: string } | null {
+  if (!config.published) return null;
+  const { bind, port } = config.published;
+  if (['127.0.0.1', 'localhost', '::1'].includes(bind)) {
+    return {
+      msg: 'published on this machine only: other devices cannot connect until LEMMA_BIND=0.0.0.0 is set in .env',
+      url: `http://${bind === '::1' ? '[::1]' : bind}:${port}`,
+    };
+  }
+  const everywhere = bind === '0.0.0.0' || bind === '::';
+  return {
+    msg: everywhere
+      ? 'published on every network interface of this machine'
+      : 'published on one address of this machine',
+    url: `http://${everywhere ? '<address of this machine>' : bind.includes(':') ? `[${bind}]` : bind}:${port}`,
+  };
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const timeZone = env.LEMMA_TIMEZONE || env.TZ || 'Europe/Prague';
   if (!isValidTimeZone(timeZone)) throw new Error(`LEMMA_TIMEZONE "${timeZone}" is not a valid IANA time zone`);
@@ -76,6 +101,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     host: env.HOST || '0.0.0.0',
     port: int(env.PORT, 8000, 1, 65535),
+    published: env.LEMMA_BIND ? { bind: env.LEMMA_BIND, port: int(env.LEMMA_PORT, 8000, 1, 65535) } : null,
     dataDir: path.resolve(env.DATA_DIR || './data'),
     webDir: env.WEB_DIR ? path.resolve(env.WEB_DIR) : '',
     initialPassword: env.LEMMA_PASSWORD ?? '',

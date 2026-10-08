@@ -209,4 +209,22 @@ CREATE TABLE forge_cache (
 );
 `,
   },
+  {
+    id: 2,
+    name: 'accounts',
+    // Every learner has a database of their own with this same schema, so these tables
+    // exist in each of them — but only the main database, the administrator's, uses them:
+    // it is the directory of the other learners, and it holds everybody's sessions.
+    // A session without a username is the administrator's, as all of them were before.
+    sql: `
+CREATE TABLE users (
+  username   TEXT    PRIMARY KEY CHECK (username = lower(username)),
+  tutor      INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+
+ALTER TABLE sessions ADD COLUMN username TEXT REFERENCES users (username) ON DELETE CASCADE;
+CREATE INDEX sessions_username ON sessions (username);
+`,
+  },
 ];

@@ -22,6 +22,10 @@ services:
       WEB_DIR: /app/web
       HOST: 0.0.0.0
       PORT: "8000"
+      # Where the port is published (see `ports` below). The app cannot see that from
+      # inside the container, and says it in its log, where people look first.
+      LEMMA_BIND: ${LEMMA_BIND:-127.0.0.1}
+      LEMMA_PORT: "${LEMMA_PORT:-8000}"
 
     # Published on localhost only by default: put a reverse proxy or a tunnel in front,
     # or set LEMMA_BIND=0.0.0.0 in .env to reach it from the local network.

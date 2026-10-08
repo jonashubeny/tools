@@ -158,16 +158,23 @@ export function turnsFrom(messages: readonly { role: 'user' | 'assistant'; conte
 const examRunning = (ctx: Ctx): boolean =>
   ctx.db.prepare('SELECT 1 FROM exams WHERE finished_at IS NULL AND deadline_at > ?').get(ctx.now()) !== undefined;
 
-export function registerTutorRoutes(
-  app: Hono,
-  ctx: Ctx,
-  body: (c: Context) => Promise<Record<string, unknown>>,
-  provider?: Provider,
-): void {
-  const { config } = ctx;
-  let active = 0;
+export interface TutorRouteDeps {
+  /** The data of whoever is asking: threads and problems are that learner's own. */
+  ctxOf: (c: Context) => Ctx;
+  /** Whether the asking account may talk to the model, which runs on the instance's key. */
+  allowed: (c: Context) => boolean;
+  body: (c: Context) => Promise<Record<string, unknown>>;
+  /** Replaces the configured AI provider; used by tests. */
+  provider?: Provider;
+}
+
+export function registerTutorRoutes(app: Hono, deps: TutorRouteDeps): void {
+  const { ctxOf, allowed, body, provider } = deps;
+  /** Replies in progress, per learner — counted by database, of which each learner has one. */
+  const active = new WeakMap<object, number>();
 
   app.get('/api/tutor/threads', (c) => {
+    const ctx = ctxOf(c);
     const problemId = c.req.query('problemId');
     const rows = (
       problemId
@@ -180,17 +187,21 @@ export function registerTutorRoutes(
   });
 
   app.get('/api/tutor/threads/:id', (c) => {
+    const ctx = ctxOf(c);
     const row = getThread(ctx, c.req.param('id'));
     if (!row) throw notFound('thread');
     return c.json(threadDto(row, messagesOf(ctx, row.id)));
   });
 
   app.delete('/api/tutor/threads/:id', (c) => {
-    ctx.db.prepare('DELETE FROM tutor_threads WHERE id = ?').run(c.req.param('id'));
+    ctxOf(c).db.prepare('DELETE FROM tutor_threads WHERE id = ?').run(c.req.param('id'));
     return c.json({ ok: true });
   });
 
   app.post('/api/tutor/chat', async (c) => {
+    const ctx = ctxOf(c);
+    const { config } = ctx;
+    if (!allowed(c)) throw new HttpError(403, 'tutor_not_allowed', 'the tutor is not switched on for this account');
     const status = tutorStatus(config);
     const run: Provider | null =
       provider ??
@@ -208,7 +219,8 @@ export function registerTutorRoutes(
     // A mock exam measures what he can do alone; the tutor waits until it is over.
     if (examRunning(ctx))
       throw new HttpError(409, 'exam_running', 'the tutor is unavailable while a mock exam is running');
-    if (active >= MAX_CONCURRENT) throw new HttpError(429, 'busy', 'the tutor is already answering');
+    const answering = active.get(ctx.db) ?? 0;
+    if (answering >= MAX_CONCURRENT) throw new HttpError(429, 'busy', 'the tutor is already answering');
 
     let thread = typeof request.threadId === 'string' ? getThread(ctx, request.threadId) : undefined;
     if (typeof request.threadId === 'string' && !thread) throw notFound('thread');
@@ -262,7 +274,7 @@ export function registerTutorRoutes(
       toolsAvailable: status.provider === 'anthropic' || provider !== undefined,
     });
 
-    active++;
+    active.set(ctx.db, answering + 1);
     c.header('X-Accel-Buffering', 'no'); // nginx: do not buffer the stream
     return streamSSE(c, async (stream) => {
       const abort = new AbortController();
@@ -332,7 +344,7 @@ export function registerTutorRoutes(
         fail(code);
       } finally {
         clearInterval(ping);
-        active--;
+        active.set(ctx.db, Math.max(0, (active.get(ctx.db) ?? 1) - 1));
         await queue;
       }
     });

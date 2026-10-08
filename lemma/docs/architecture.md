@@ -86,8 +86,9 @@ bump the version next to it.
 | Table | Purpose |
 |---|---|
 | `meta` | schema version, instance id |
-| `auth` | password hash (scrypt), created/changed timestamps |
-| `sessions` | hashed session tokens with expiry |
+| `auth` | the password hash (scrypt) of the database's owner, created/changed timestamps |
+| `sessions` | hashed session tokens with expiry, each naming its account (none: the administrator) |
+| `users` | the other accounts: name, tutor permission, created — used in the main database only |
 | `settings` | key → JSON (locale, theme, school state, goals, integrations) |
 | `problems` | every issued problem instance: generator, seed, level, context, snapshot JSON, status |
 | `attempts` | every submitted answer: input, verdict, time, hints so far, inferred and confirmed error |
@@ -154,9 +155,13 @@ describe an unfinished computation ("the learner computed `log_2(12 + 4)`").
 
 Threat model: a personal app reachable from the internet through a tunnel.
 
-- **Authentication**: one password, set from `LEMMA_PASSWORD` on first start, stored as a
-  salted scrypt hash. Sessions are random 256-bit tokens, stored hashed, sent as an
+- **Authentication**: a password per account, stored as a salted scrypt hash. The
+  administrator's is set from `LEMMA_PASSWORD` on first start; the administrator creates
+  the other accounts. Sessions are random 256-bit tokens, stored hashed, sent as an
   `HttpOnly`, `SameSite=Lax` cookie; `Secure` when `COOKIE_SECURE=1`.
+- **Separation of learners**: one database per account (below), so a route cannot return
+  another learner's row — there is no such row in the database it was handed. Everything
+  under `/api/admin` requires the administrator, in one place.
 - **Login throttling** per client address with exponential back-off.
 - **CSRF**: state-changing routes require a JSON content type and a same-origin `Origin`
   header, on top of `SameSite`.
@@ -169,7 +174,45 @@ Threat model: a personal app reachable from the internet through a tunnel.
   database, and are never returned by the API.
 - **Tutor**: model output is rendered as text and KaTeX, never as HTML.
 
-Out of scope: multi-user isolation, protection against someone with access to the host.
+Out of scope: protection against someone with access to the host, and against the
+administrator — who runs the server and can read every file on it.
+
+### Accounts: one database per learner
+
+Lemma was designed for one learner, and every service takes a context of *the* database,
+*the* configuration and a clock. Accounts were added without changing that: each account
+has a database of its own, and a request is handed the context of whoever is asking.
+
+```
+<data>/lemma.sqlite                the administrator's — what a single-user instance has,
+                                   plus the table of users and everybody's sessions
+<data>/users/<name>/lemma.sqlite   one per user, with its own backups/ beside it
+```
+
+The alternative, a `user_id` column on every table, would have touched every query in the
+application, and one forgotten `WHERE` would show one person another's work. With separate
+files the separation does not depend on anyone remembering anything, and the account tests
+check it both through the API and on disk. It also keeps what was already true: one writer
+per database, a backup is a file, the learner model replays from one log. The cost is an
+open file handle per user and that nothing can be computed *across* learners — which this
+application does not want to do anyway (no leaderboards, no comparisons).
+
+Three things follow from "a user's database is a complete Lemma database":
+
+- it holds its owner's password, so the administrator's `auth` row and a user's are the
+  same mechanism, and a database can move between instances as an account;
+- every database has the tables for accounts and sessions, since there is one schema, but
+  only the main one uses them;
+- what comes from the environment and belongs to a person — the GitHub name, the forge
+  tokens — is given to the administrator's context only. A token in particular must not
+  reach a user, who could name a Forgejo server of their own and have it sent there; for
+  the same reason only the administrator may set a Forgejo address at all.
+
+The AI tutor is the one shared resource with a bill attached. It is allowed per account,
+off for a new one, and its concurrency limit is counted per learner.
+
+Removing an account deletes its row and sessions and moves its directory to
+`users/.deleted/`: months of somebody's work should survive one wrong click.
 Putting Cloudflare Access in front is recommended and needs no change in the app.
 
 ## 7. The tutor

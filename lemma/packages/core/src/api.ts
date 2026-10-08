@@ -65,9 +65,42 @@ export interface SettingsDto {
   forgejoUser: string;
 }
 
+// ----------------------------------------------------------------------------- accounts
+
+/**
+ * The administrator is the one account that exists from the first start: its password
+ * comes from the server's environment, and it alone may create the others.
+ */
+export const ADMIN_USERNAME = 'admin';
+
+/** Lower-case and safe as a directory name, because a learner's data lives in one. */
+export const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._-]{1,31}$/;
+
+export const MIN_PASSWORD_LENGTH = 8;
+
+/** Who is signed in. */
+export interface AccountDto {
+  username: string;
+  admin: boolean;
+}
+
+/** A learner's account, as the administrator sees it. */
+export interface UserDto {
+  username: string;
+  /** May use the AI tutor, which runs on the instance's API key. */
+  tutor: boolean;
+  createdAt: number;
+  /** The last time any of the account's sessions was seen; null if nobody has signed in yet. */
+  lastSeenAt: number | null;
+}
+
 export interface MeDto {
   authenticated: boolean;
   authRequired: boolean;
+  /** Null until signed in. */
+  account: AccountDto | null;
+  /** Accounts besides the administrator's exist, so signing in takes a name as well. */
+  hasUsers: boolean;
   onboarded: boolean;
   settings: SettingsDto;
   version: string;

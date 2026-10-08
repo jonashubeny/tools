@@ -2,12 +2,14 @@ import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypt
 import type { Db } from './db';
 
 /**
- * Single-user authentication.
+ * Authentication.
  *
- * - The password is stored as a salted scrypt hash (Node's built-in crypto; no native
- *   dependency to keep patched).
+ * - A password is stored as a salted scrypt hash (Node's built-in crypto; no native
+ *   dependency to keep patched). Every learner's database carries its owner's password,
+ *   the administrator's being the main one.
  * - A session is a random 256-bit token. Only its SHA-256 is stored, so a leaked database
- *   does not hand out valid sessions.
+ *   does not hand out valid sessions. Sessions of all accounts are kept in the main
+ *   database; each names the account it belongs to, and none means the administrator.
  * - Login attempts are throttled per client address with exponential back-off.
  */
 
@@ -75,41 +77,59 @@ export class AuthStore {
     return verifyPassword(password, row.password_hash);
   }
 
-  /** Create a session and return the token to hand to the browser. */
-  createSession(now: number, userAgent: string | undefined): { token: string; expiresAt: number } {
+  /**
+   * Create a session for an account — `null` is the administrator — and return the token
+   * to hand to the browser.
+   */
+  createSession(
+    now: number,
+    userAgent: string | undefined,
+    username: string | null = null,
+  ): { token: string; expiresAt: number } {
     const token = randomBytes(32).toString('base64url');
     const expiresAt = now + this.sessionDays * 86_400_000;
     this.db
       .prepare(
-        'INSERT INTO sessions (token_hash, created_at, expires_at, last_seen_at, user_agent) VALUES (?, ?, ?, ?, ?)',
+        'INSERT INTO sessions (token_hash, created_at, expires_at, last_seen_at, user_agent, username) VALUES (?, ?, ?, ?, ?, ?)',
       )
-      .run(sha256(token), now, expiresAt, now, userAgent?.slice(0, 200) ?? null);
+      .run(sha256(token), now, expiresAt, now, userAgent?.slice(0, 200) ?? null, username);
     return { token, expiresAt };
   }
 
-  validateSession(token: string | undefined, now: number): boolean {
-    if (!token) return false;
+  /**
+   * Whose session a token is: a username, or `null` for the administrator. `undefined`
+   * when the token is not a valid session — missing, forged or expired.
+   */
+  sessionOwner(token: string | undefined, now: number): string | null | undefined {
+    if (!token) return undefined;
     const hash = sha256(token);
-    const row = this.db.prepare('SELECT expires_at, last_seen_at FROM sessions WHERE token_hash = ?').get(hash) as
-      { expires_at: number; last_seen_at: number } | undefined;
-    if (!row) return false;
+    const row = this.db
+      .prepare('SELECT expires_at, last_seen_at, username FROM sessions WHERE token_hash = ?')
+      .get(hash) as { expires_at: number; last_seen_at: number; username: string | null } | undefined;
+    if (!row) return undefined;
     if (row.expires_at <= now) {
       this.db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(hash);
-      return false;
+      return undefined;
     }
     // Touch at most once an hour to avoid a write on every request.
     if (now - row.last_seen_at > 3_600_000) {
       this.db.prepare('UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?').run(now, hash);
     }
-    return true;
+    return row.username;
+  }
+
+  validateSession(token: string | undefined, now: number): boolean {
+    return this.sessionOwner(token, now) !== undefined;
   }
 
   deleteSession(token: string | undefined): void {
     if (token) this.db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(sha256(token));
   }
 
-  deleteAllSessions(): void {
-    this.db.prepare('DELETE FROM sessions').run();
+  /** Sign one account out everywhere; `null` is the administrator. */
+  deleteSessionsOf(username: string | null): void {
+    if (username === null) this.db.prepare('DELETE FROM sessions WHERE username IS NULL').run();
+    else this.db.prepare('DELETE FROM sessions WHERE username = ?').run(username);
   }
 
   purgeExpired(now: number): number {

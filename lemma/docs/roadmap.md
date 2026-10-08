@@ -68,8 +68,13 @@ the course mapping must be redone from the new study plan rather than patched.
 - **The whole loop works end to end**: sign in, see a plan for today with a reason for
   every block, learn a concept, practise it with typed answers, get hints, see the worked
   solution, have the error classified, watch the mastery level respond, review later,
-  sit a mock exam, read the report. 462 automated tests cover the engine, the learning
+  sit a mock exam, read the report. 476 automated tests cover the engine, the learning
   model, every problem generator and the HTTP API.
+- **Accounts.** The administrator (the password from `.env`) creates users in Settings;
+  each has a database of their own. Tested through the API and on disk — separation,
+  passwords, removal, the tutor permission, an upgrade from a database without accounts
+  with seventy days of history in it — and walked through in a browser: create a user,
+  sign out, sign in as that user.
 - **Every one of the 65 concepts has problems** — all 17 syllabus chapters (45 concepts,
   96 generators), the foundations from earlier years (13 concepts) and the enrichment
   topics (7 concepts). Each generator is checked on 40 seeds per level against an
@@ -113,13 +118,19 @@ the course mapping must be redone from the new study plan rather than patched.
   proves the plumbing, not the pedagogy. Expect to tune the prompts.
 - **GitHub and Forgejo against the live services.** Tested against scripted responses
   only (pagination, ETags, failures, tokens).
-- **Docker Engine itself.** The development machine has no Docker daemon and cannot run
-  one (its `docker` command is Podman's wrapper). Docker's Compose was used against
-  Podman's API, as described above; that proves the compose file and the commands, not the
-  engine. Never exercised: BuildKit building the image (Buildah built it), Docker's bridge
-  network with the published port (the machine can only do host networking), and the app
-  running as user 1000 (there it can only run as the namespace's root). The first
-  `docker compose up -d --build` on a real Docker host is therefore a first.
+- **Docker Engine, from start to finish.** The development machine has no Docker daemon
+  and cannot run one (its `docker` command is Podman's wrapper). Docker's Compose was used
+  against Podman's API, as described above; that proves the compose file and the commands,
+  not the engine. What is known from a real Docker host is two logs of 8 October 2026,
+  both of the version before accounts. The first build stopped while BuildKit was
+  installing the dependencies, on that host's network: read timeouts from the npm registry
+  inside the build container. The second went through, and the server started, set the
+  password and wrote its first backup into the volume (presumably as user 1000, the
+  default, which the development machine cannot do). Not confirmed there: the page
+  answering through the published port on Docker's bridge network, a restart with the data
+  intact, restoring a backup. And the install step as it is now — it keeps its downloads
+  and retries, added after the first log — has been built by Buildah only (including a
+  rebuild with no network at all), not yet by BuildKit.
 - **A real learner.** Every constant in the learning model is a reasoned starting value.
   After about six weeks of use, compare predicted and actual success and retune; the
   event log makes that safe.
@@ -131,6 +142,10 @@ the course mapping must be redone from the new study plan rather than patched.
 
 ### Not built
 
+For accounts: more than one administrator, signing up by oneself, an administrator's view
+of how users are doing, limits on what a user may spend on the tutor, and a button that
+erases a removed account's data (the directory is left for the administrator to delete).
+
 SCIO-style admission practice; years 3 and 4; vectors, matrices, limits, derivatives,
 combinatorics (named on the FIT page as planned); step-by-step answer entry; ESLint;
 end-to-end browser tests kept in the repository (the browser checks were run from
@@ -138,6 +153,5 @@ throw-away scripts); offline support.
 
 ### Housekeeping
 
-The repository is initialised (`main`) but **nothing has been committed** — that is the
-owner's first decision to make. The syllabus document itself is not in the repository;
-the seventeen chapter titles are a transcription.
+The syllabus document itself is not in the repository; the seventeen chapter titles are a
+transcription.

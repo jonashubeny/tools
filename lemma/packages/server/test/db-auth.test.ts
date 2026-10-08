@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ensurePassword } from '../src/app';
 import { AuthStore, LoginThrottle, hashPassword, verifyPassword } from '../src/auth';
-import { loadConfig } from '../src/config';
+import { loadConfig, publishedNote } from '../src/config';
 import { backupDatabase, backupDay, latestSchemaVersion, migrate, openDatabase, schemaVersion } from '../src/db';
 import { setLogLevel } from '../src/log';
 
@@ -155,6 +155,23 @@ describe('configuration', () => {
     expect(config.authDisabled).toBe(false);
     expect(config.ai.provider).toBe('none');
     expect(config.dayStartHour).toBe(4);
+  });
+
+  it('says where Compose publishes the port, and for whom', () => {
+    // Outside Compose nobody says where the port goes, so there is nothing to report.
+    expect(publishedNote(loadConfig({}))).toBeNull();
+
+    const local = publishedNote(loadConfig({ LEMMA_BIND: '127.0.0.1', LEMMA_PORT: '8000' }));
+    expect(local?.url).toBe('http://127.0.0.1:8000');
+    expect(local?.msg).toContain('this machine only');
+    expect(local?.msg).toContain('LEMMA_BIND=0.0.0.0');
+
+    const open = publishedNote(loadConfig({ LEMMA_BIND: '0.0.0.0', LEMMA_PORT: '8123' }));
+    expect(open?.url).toBe('http://<address of this machine>:8123');
+    expect(open?.msg).toBe('published on every network interface of this machine');
+
+    expect(publishedNote(loadConfig({ LEMMA_BIND: '192.168.1.5' }))?.url).toBe('http://192.168.1.5:8000');
+    expect(publishedNote(loadConfig({ LEMMA_BIND: 'fd00::5', LEMMA_PORT: '9000' }))?.url).toBe('http://[fd00::5]:9000');
   });
 
   it('infers the AI provider from the credentials present', () => {

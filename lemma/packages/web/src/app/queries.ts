@@ -17,8 +17,9 @@ import type {
   PlanDto,
   RunDto,
   TutorThreadDto,
+  UserDto,
 } from '@lemma/core';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { type QueryClient, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback } from 'react';
 import { api } from './api';
 
@@ -89,6 +90,20 @@ export const useThreads = (problemId?: string) =>
         problemId ? `/api/tutor/threads?problemId=${encodeURIComponent(problemId)}` : '/api/tutor/threads',
       ),
   });
+
+/** The accounts of this instance; only the administrator may ask. */
+export const useUsers = (enabled: boolean) =>
+  useQuery({ queryKey: ['users'], queryFn: () => api.get<UserDto[]>('/api/admin/users'), enabled });
+
+/**
+ * Drop everything cached about the signed-in learner and ask again who is signed in.
+ * Called whenever the account may have changed, so that what one learner saw never
+ * flashes up for the next one in the same browser.
+ */
+export function forgetLearner(client: QueryClient): Promise<void> {
+  client.removeQueries({ predicate: (query) => query.queryKey[0] !== 'me' && query.queryKey[0] !== 'blueprints' });
+  return client.invalidateQueries({ queryKey: ['me'] });
+}
 
 /** Refetch whatever is on screen: called after anything that changes the learner's state. */
 export function useRefresh(): () => void {

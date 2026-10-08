@@ -210,11 +210,11 @@ describe('insight', () => {
   it('exports everything as JSON and recomputes on request', async () => {
     const h = harness();
     await practise(h, 'lin.graph', 2);
-    const dump = await h.get<{ tables: Record<string, unknown[]> }>('/api/admin/export');
+    const dump = await h.get<{ tables: Record<string, unknown[]> }>('/api/data/export');
     expect(dump.headers.get('content-disposition')).toContain('lemma-export-');
     expect(dump.body.tables.problems).toHaveLength(2);
     expect(JSON.stringify(dump.body)).not.toContain('password_hash');
-    const recomputed = (await h.send<{ skills: number; problems: number }>('POST', '/api/admin/recompute')).body;
+    const recomputed = (await h.send<{ skills: number; problems: number }>('POST', '/api/data/recompute')).body;
     expect(recomputed.problems).toBe(2);
   });
 });
