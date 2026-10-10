@@ -18,6 +18,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit -p packages/core && tsc --noEmit -p packages/content && tsc --noEmit -p packages/server && tsc --noEmit -p packages/web",
     "content:lint": "vitest run packages/content",
+    "jpz:coverage": "tsx scripts/jpz-coverage.ts",
     "format": "prettier --write ."
   },
   "devDependencies": {

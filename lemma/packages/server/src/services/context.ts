@@ -1,5 +1,6 @@
 import { randomBytes, randomInt } from 'node:crypto';
-import { DEFAULT_GRADE_SCALE, isLocale, studyDay, type SettingsDto } from '@lemma/core';
+import { DEFAULT_GOAL, conceptsOfGoal } from '@lemma/content';
+import { DEFAULT_GRADE_SCALE, isGoalId, isLocale, studyDay, type GoalId, type SettingsDto } from '@lemma/core';
 import type { Config } from '../config';
 import { type Db, fromJson, toJson } from '../db';
 
@@ -30,6 +31,9 @@ export const DEFAULT_SETTINGS: SettingsDto = {
   weekGoal: 4,
   confidencePrompt: true,
   currentTopic: null,
+  goal: DEFAULT_GOAL,
+  examDay: null,
+  inSchool: [],
   tests: [],
   pauses: [],
   gradeScale: DEFAULT_GRADE_SCALE,
@@ -52,7 +56,7 @@ function writeSetting(db: Db, key: string, value: unknown, now: number): void {
 
 export function getSettings(ctx: Ctx): SettingsDto {
   const stored = readSetting<Partial<SettingsDto>>(ctx.db, 'profile', {});
-  return {
+  const settings: SettingsDto = {
     ...DEFAULT_SETTINGS,
     // Integrations default to the environment until changed in the UI.
     githubUser: ctx.config.github.username,
@@ -60,7 +64,13 @@ export function getSettings(ctx: Ctx): SettingsDto {
     forgejoUser: ctx.config.forgejo.username,
     ...stored,
   };
+  // A goal this version does not know (a database from a newer one) falls back to the default.
+  if (!isGoalId(settings.goal)) settings.goal = DEFAULT_GOAL;
+  return settings;
 }
+
+/** What the learner is preparing for: it decides which skills every view is about. */
+export const goalOf = (ctx: Ctx): GoalId => getSettings(ctx).goal;
 
 const clampInt = (value: unknown, min: number, max: number, fallback: number): number => {
   const n = typeof value === 'number' ? Math.round(value) : Number.NaN;
@@ -85,6 +95,15 @@ export function updateSettings(ctx: Ctx, patch: Record<string, unknown>): Settin
   if (patch.currentTopic === null) next.currentTopic = null;
   else if (patch.currentTopic !== undefined)
     next.currentTopic = clampInt(patch.currentTopic, 1, 99, current.currentTopic ?? 1);
+
+  if (isGoalId(patch.goal)) next.goal = patch.goal;
+  if (patch.examDay === null || patch.examDay === '') next.examDay = null;
+  else if (typeof patch.examDay === 'string' && DAY.test(patch.examDay)) next.examDay = patch.examDay;
+  if (Array.isArray(patch.inSchool))
+    next.inSchool = [...new Set(patch.inSchool.filter((id): id is string => typeof id === 'string'))].slice(0, 12);
+  // What the class is on has to be part of the goal, also after the goal has changed.
+  const inGoal = new Set(conceptsOfGoal(next.goal).map((concept) => concept.id));
+  next.inSchool = next.inSchool.filter((id) => inGoal.has(id));
 
   if (Array.isArray(patch.tests)) {
     next.tests = patch.tests

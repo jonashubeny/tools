@@ -62,6 +62,39 @@ describe('the content linter', () => {
     expect(flagged(garbled, 'is unparseable')).toBe(true);
   });
 
+  it('knows how Czech counts: the noun after 1 and after 2 to 4', () => {
+    const says = (cs: string): boolean => flagged(sound({ prompt: L(cs, 'ok') }), 'Czech count');
+    // Where the genitive plural cannot be right.
+    expect(says('3 trojúhelníků po 180°:')).toBe(true);
+    expect(says('Kniha stojí 4 korun.')).toBe(true);
+    expect(says('Cesta trvá o 2 hodin déle.')).toBe(true);
+    expect(says('V klubu je 4 trenérů.')).toBe(true);
+    expect(says('Celek je rozdělen na $1 + 2 = 3$ stejných dílů.')).toBe(true);
+    expect(says('Linka jezdí každých 4 minut.')).toBe(true);
+    expect(says('Zbývá 1 dílů.')).toBe(true);
+    // Written rightly.
+    expect(says('3 trojúhelníky po 180°:')).toBe(false);
+    expect(says('Kniha stojí 4 koruny, sešit 5 korun a pero 12 korun.')).toBe(false);
+    expect(says('V klubu je 14 trenérů.')).toBe(false);
+    // Where the genitive is what the sentence asks for, the check stays out of it.
+    expect(says('Obrazec je složen ze 3 dílů.')).toBe(false);
+    expect(says('Součet všech 4 čísel je 20.')).toBe(false);
+    expect(says('Opakuje se skupina 4 korálků.')).toBe(false);
+    // Not counts at all: an adverb, a decimal, a formula that merely ends in a digit.
+    expect(says('Graf posuneme o 2 dolů.')).toBe(false);
+    expect(says('Nádoba má objem $2{,}3$ litrů.')).toBe(false);
+    expect(says('Míček má výšku $h(t) = -5t^2 + 10t + 1$ metrů.')).toBe(false);
+  });
+
+  it('wants a decimal comma in Czech prose', () => {
+    expect(
+      flagged(sound({ hints: [L('Jedno procento je 0.4.', 'One per cent is 0.4.'), L('b', 'b')] }), 'decimal point'),
+    ).toBe(true);
+    expect(messages(sound({ hints: [L('Jedno procento je 0,4.', 'One per cent is 0.4.'), L('b', 'b')] }))).toEqual([]);
+    // Inside mathematics the formatter decides, and a class "9. A" is not a number.
+    expect(messages(sound({ prompt: L('Třída 9. A má $0.5$ dne volna.', 'ok') }))).toEqual([]);
+  });
+
   it('wants the correct answer written the way a person would write it', () => {
     const answer = (value: string): ProblemInstance => sound({ answer: { kind: 'expr', value, vars: ['x'] } });
     expect(flagged(answer('4*x+(-6)'), 'written awkwardly')).toBe(true);

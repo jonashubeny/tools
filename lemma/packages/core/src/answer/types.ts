@@ -30,6 +30,12 @@ export interface NumberSpec extends TextEntry {
    * returned as invalid (right or not, it is not in the requested form).
    */
   unit?: 'deg' | 'rad';
+  /**
+   * 'reduced': the answer must be an integer or a fraction in lowest terms, the way the
+   * entrance examination asks for it ("zlomkem v základním tvaru"). 6/8 has the right
+   * value and is returned as invalid — not yet an answer — rather than marked wrong.
+   */
+  form?: 'reduced';
 }
 
 export interface ExprSpec extends TextEntry {
@@ -107,6 +113,26 @@ export interface SelfSpec {
 
 export type AnswerKind = AnswerSpec['kind'];
 
+/**
+ * The chance of answering right without knowing: one in five for five options, one in two
+ * for a true/false statement, none for a typed answer. The learner model trusts a right
+ * answer the less, the easier it is to guess.
+ */
+export function guessChance(spec: AnswerSpec): number {
+  switch (spec.kind) {
+    case 'choice': {
+      const options = spec.options.length;
+      if (options <= 1) return 0;
+      // Several boxes to tick: every selection but the empty one is a possible answer.
+      return spec.multi ? 1 / (2 ** options - 1) : 1 / options;
+    }
+    case 'spot':
+      return spec.lines.length > 1 ? 1 / spec.lines.length : 0;
+    default:
+      return 0;
+  }
+}
+
 /** A specific wrong answer with a known cause. */
 export interface Misconception {
   /** The wrong answer, in the same syntax as the canonical one (option id for choices). */
@@ -120,7 +146,7 @@ export interface Misconception {
 
 /** What the client needs in order to render the input — no answers inside. */
 export type PublicAnswerSpec =
-  | { kind: 'number'; label?: string; placeholder?: string; unit?: 'deg' | 'rad' }
+  | { kind: 'number'; label?: string; placeholder?: string; unit?: 'deg' | 'rad'; form?: 'reduced' }
   | { kind: 'expr'; label?: string; placeholder?: string; vars: string[]; form?: ExprForm }
   | { kind: 'set'; label?: string; placeholder?: string; unit?: 'rad' }
   | { kind: 'interval'; label?: string; placeholder?: string }
@@ -133,7 +159,7 @@ export type PublicAnswerSpec =
 export function publicAnswerSpec(spec: AnswerSpec): PublicAnswerSpec {
   switch (spec.kind) {
     case 'number':
-      return { kind: 'number', label: spec.label, placeholder: spec.placeholder, unit: spec.unit };
+      return { kind: 'number', label: spec.label, placeholder: spec.placeholder, unit: spec.unit, form: spec.form };
     case 'expr':
       return { kind: 'expr', label: spec.label, placeholder: spec.placeholder, vars: spec.vars, form: spec.form };
     case 'set':

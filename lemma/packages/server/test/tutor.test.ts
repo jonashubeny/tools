@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { getGenerator } from '@lemma/content';
@@ -12,13 +13,14 @@ import {
 } from '@lemma/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/config';
-import { getProblemRow } from '../src/services/practice';
+import { getProblemRow, nextInRun, startDiagnostic } from '../src/services/practice';
 import { tutorStatus, turnsFrom } from '../src/services/tutor';
 import { runClaude } from '../src/services/tutor/anthropic';
 import { runLocal } from '../src/services/tutor/local';
-import { STABLE_INSTRUCTIONS } from '../src/services/tutor/prompt';
+import { STABLE_INSTRUCTIONS, instructionsFor } from '../src/services/tutor/prompt';
 import { TOOL_DEFINITIONS, executeTool } from '../src/services/tutor/tools';
 import { type Provider, type ProviderInput, TutorError } from '../src/services/tutor/types';
+import { VOJTA, playRun, withGoal } from './fixtures';
 import { MINUTE, type Harness, harness, rightAnswer, wrongAnswerFor } from './helpers';
 
 const startProblem = async (h: Harness, concept = 'quad.vertex'): Promise<string> =>
@@ -331,6 +333,90 @@ describe('the tutor endpoint', () => {
     await h.send('DELETE', `/api/tutor/threads/${threadId}`);
     expect((await h.get(`/api/tutor/threads/${threadId}`)).status).toBe(404);
     expect((h.db.prepare('SELECT COUNT(*) AS n FROM tutor_messages').get() as { n: number }).n).toBe(0);
+  });
+
+  it('speaks to the owner as it always has, and to anybody else without assuming who they are', () => {
+    // The owner's instructions are, to the byte, the text this instance sent before other
+    // learners and other goals existed: the cached prefix is unchanged.
+    expect(instructionsFor({ owner: true, goal: 'school-it-2' })).toBe(STABLE_INSTRUCTIONS);
+    expect(createHash('sha256').update(STABLE_INSTRUCTIONS).digest('hex')).toBe(
+      'fa4df8db752d4f0e911bdf08541451903cc29ff518ddaa85b5937e747dc131d9',
+    );
+    expect(STABLE_INSTRUCTIONS).toContain('quad.vertex');
+    expect(STABLE_INSTRUCTIONS).not.toContain('frac.operations');
+
+    const others = [
+      { owner: false, goal: 'school-it-2' },
+      { owner: false, goal: 'jpz-9' },
+      { owner: true, goal: 'jpz-5' },
+    ] as const;
+    for (const who of others) {
+      const text = instructionsFor(who);
+      // Nothing about the owner, and no guess at who is asking.
+      expect(text).not.toContain('Jonas');
+      expect(text).not.toMatch(/\b(he|him|his|himself)\b/i);
+      for (const definition of TOOL_DEFINITIONS) expect(text).toContain(definition.name);
+      expect(text).toContain('Correctness is not yours to decide');
+      expect(text).toContain('do not state the final answer');
+      // One text per goal, so that each is a cacheable prefix.
+      expect(instructionsFor(who)).toBe(text);
+    }
+    const [school, ninth, fifth] = others.map((who) => instructionsFor(who));
+    expect(school).toContain('quad.vertex');
+    expect(school).not.toContain('frac.operations');
+    expect(ninth).toContain('frac.operations');
+    expect(ninth).not.toContain('quad.vertex');
+    expect(ninth).toContain('no calculator');
+    expect(ninth).not.toContain('FIT');
+    // Each goal lists its own skills: the fifth-grade examination has no equations.
+    expect(fifth).not.toContain('eqn.linear');
+    expect(instructionsFor({ owner: false, goal: 'jpz-9' })).toBe(instructionsFor({ owner: true, goal: 'jpz-9' }));
+  });
+
+  it('tells the model about a learner preparing for an entrance examination', async () => {
+    let seen: ProviderInput | null = null;
+    const h = harness({
+      provider: scripted((input) => {
+        seen = input;
+        input.onText('Dobře.');
+      }),
+    });
+    withGoal(h.ctx, 'jpz-9', { name: 'Ema', examDay: '2027-04-12', inSchool: ['pct.basics'] });
+    expect((await chat(h, { mode: 'simple', message: 'Co je to zlomek?', concept: 'frac.concept' })).status).toBe(200);
+    const input = seen as unknown as ProviderInput;
+    expect(input.instructions).toBe(instructionsFor({ owner: true, goal: 'jpz-9' }));
+    expect(input.context).toContain('The learner goes by: Ema.');
+    expect(input.context).toContain('Preparing for: Entrance examination to four-year fields');
+    expect(input.context).toContain('70 minutes, 50 points, no calculator');
+    expect(input.context).toContain('2027-04-12 (in 187 days)');
+    expect(input.context).toContain("The learner's class is currently on: Percent");
+    expect(input.context).toContain('asked in the entrance examination');
+    expect(input.context).toContain("The learner's level on it: 0/5");
+    // The mode's instruction is worded for a learner the app does not know.
+    expect(input.context).toContain('Mode: explain simply');
+    expect(input.context).not.toMatch(/\b(He|His) (goes|level|class|has)\b/);
+    expect(input.context).not.toContain('syllabus topic');
+  });
+
+  it('keeps away while a placement test is being taken', async () => {
+    const h = harness({ provider: scripted((input) => input.onText('Ano.')) });
+    withGoal(h.ctx, 'jpz-9');
+    const started = startDiagnostic(h.ctx);
+    const first = started.problem!.id;
+    const refused = await chat(h, { mode: 'hint', message: 'Jak na to?', concept: 'frac.concept' });
+    expect(refused.status).toBe(409);
+    expect(refused.error!.error).toBe('placement_running');
+    expect((await chat(h, { mode: 'hint', message: 'Jak na to?', problemId: first })).status).toBe(409);
+    expect(getProblemRow(h.ctx, first).tutor_used).toBe(0);
+
+    // A test left lying does not keep the tutor away for good — but its problems stay closed.
+    h.advance(46 * MINUTE);
+    expect((await chat(h, { mode: 'simple', message: 'Co je zlomek?', concept: 'frac.concept' })).status).toBe(200);
+    expect((await chat(h, { mode: 'hint', message: 'A tahle úloha?', problemId: first })).status).toBe(409);
+
+    // Finished: everything about it may be discussed.
+    playRun(h.ctx, nextInRun(h.ctx, started.run.id), VOJTA, createRng(1));
+    expect((await chat(h, { mode: 'mistake', message: 'Kde jsem udělal chybu?', problemId: first })).status).toBe(200);
   });
 
   it('validates the request', async () => {

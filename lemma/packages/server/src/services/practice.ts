@@ -1,6 +1,7 @@
 import {
   GENERATORS,
   STATIC_PROBLEMS,
+  conceptsOfGoal,
   conceptsOfTopic,
   generatorsFor,
   getConcept,
@@ -22,11 +23,15 @@ import {
   type ProblemDto,
   type ProblemInstance,
   type ProblemKind,
+  type ProblemWhyDto,
+  type Purpose,
   type RunDto,
+  type RunKind,
   type RunSummaryDto,
   type StartRunRequest,
   type StartRunResponse,
   ACTIVITY,
+  CREDIT,
   ERROR_FAMILY,
   L,
   answerToTex,
@@ -34,20 +39,33 @@ import {
   chooseCandidate,
   chooseLevel,
   createRng,
+  guessChance,
   inferError,
   isErrorType,
-  isUnaided,
   levelOf,
   nextLevelGates,
+  pickNext,
   pointsForProblem,
-  predictSuccess,
+  predictWithChance,
   progressOf,
   publicAnswerSpec,
 } from '@lemma/core';
 import { fromJson, toJson } from '../db';
 import { addEvent, award, checkCountMilestones } from './activity';
-import { type Ctx, HttpError, badRequest, getSettings, newId, newSeed, notFound, today } from './context';
+import { completeAssignment } from './assignments';
+import { type Ctx, HttpError, badRequest, getSettings, goalOf, newId, newSeed, notFound, today } from './context';
+import {
+  chooseDiagnostic,
+  closeDiagnostic,
+  diagnosticLength,
+  diagnosticOfRun,
+  diagnosticStatus,
+  hasDiagnostic,
+  isDiagnosticCandidate,
+  openDiagnostic,
+} from './diagnostic';
 import { type States, applyResolved, factsFromRow, loadStates, replayAll, saveState, stateOf } from './learner';
+import { isPurpose, selectionFor, sessionItems } from './selection';
 
 /** The practice flow: issuing problems, checking answers, hints, and runs. */
 
@@ -87,6 +105,11 @@ export interface ProblemRow {
   level_before: number | null;
   level_after: number | null;
   replay_of: string | null;
+  /** How likely a right answer was by guessing; null on rows older than the column. */
+  chance: number | null;
+  /** Why the problem was asked, where a selection was made. */
+  purpose: string | null;
+  reason: string | null;
 }
 
 interface QueueItem {
@@ -115,7 +138,10 @@ interface RunRow {
   finished_at: number | null;
 }
 
-const hidesSkill = (context: string): boolean => context === 'mixed' || context === 'exam';
+const hidesSkill = (context: string): boolean => context === 'mixed' || context === 'exam' || context === 'diagnostic';
+
+/** Contexts that measure: one submission, no hints, and nothing said until the whole is over. */
+const isQuiet = (context: string): boolean => context === 'exam' || context === 'diagnostic';
 
 export function getProblemRow(ctx: Ctx, id: string): ProblemRow {
   const row = ctx.db.prepare('SELECT * FROM problems WHERE id = ?').get(id) as ProblemRow | undefined;
@@ -127,7 +153,7 @@ export const snapshotOf = (row: ProblemRow): ProblemInstance => JSON.parse(row.s
 
 /** How many submissions a problem allows before it is closed. */
 export function maxTries(spec: AnswerSpec, context: string): number {
-  if (context === 'exam' || spec.kind === 'self') return 1;
+  if (isQuiet(context) || spec.kind === 'self') return 1;
   if (spec.kind === 'choice') return spec.options.length <= 3 ? 1 : 2;
   if (spec.kind === 'spot') return 2;
   return 3;
@@ -196,9 +222,11 @@ export function problemDto(
   const snapshot = snapshotOf(row);
   const concept = getConcept(row.skill);
   const resolved = row.status !== 'open';
+  // A test or a placement says nothing about a single answer until the whole is over.
+  const sealed = isQuiet(row.context) && !measurementFinished(ctx, row);
   // In interleaved practice the topic stays hidden until the answer is in: recognising the
   // kind of problem is part of what is being practised.
-  const hidden = hidesSkill(row.context) && !resolved;
+  const hidden = hidesSkill(row.context) && (!resolved || sealed);
   const inputs = (
     ctx.db
       .prepare(`SELECT input FROM attempts WHERE problem_id = ? AND verdict = 'incorrect' ORDER BY id`)
@@ -215,30 +243,47 @@ export function problemDto(
     prompt: snapshot.prompt,
     figure: snapshot.figure ?? null,
     answer: publicAnswerSpec(snapshot.answer),
-    hintCount: row.context === 'exam' ? 0 : snapshot.hints.length,
+    hintCount: isQuiet(row.context) ? 0 : snapshot.hints.length,
     hints: snapshot.hints.slice(0, row.hints_used),
     estSeconds: row.est_seconds,
-    wrongAttempts: row.wrong_attempts,
+    wrongAttempts: sealed ? 0 : row.wrong_attempts,
     triesLeft: resolved ? 0 : Math.max(0, maxTries(snapshot.answer, row.context) - row.wrong_attempts),
-    status: row.status,
+    status: sealed && resolved ? 'recorded' : row.status,
     it: snapshot.context?.it ?? false,
     applied: snapshot.context?.applied ?? false,
     outcome:
-      resolved &&
-      row.status !== 'skipped' &&
-      row.resolved_at !== null &&
-      (row.context !== 'exam' || examFinished(ctx, row.exam_id))
+      resolved && row.status !== 'skipped' && row.resolved_at !== null && !sealed
         ? outcomeDto(ctx, row, states ?? loadStates(ctx), extras)
         : null,
-    previousInputs: row.context === 'exam' ? [] : inputs,
+    previousInputs: isQuiet(row.context) ? [] : inputs,
+    why: whyOf(row, hidden),
   };
 }
 
-function examFinished(ctx: Ctx, examId: string | null): boolean {
-  if (!examId) return true;
-  const row = ctx.db.prepare('SELECT finished_at FROM exams WHERE id = ?').get(examId) as
+/** Is the test or placement a problem belongs to over, so that its outcome may be shown? */
+function measurementFinished(ctx: Ctx, row: ProblemRow): boolean {
+  if (row.context === 'exam') {
+    if (!row.exam_id) return true;
+    const exam = ctx.db.prepare('SELECT finished_at FROM exams WHERE id = ?').get(row.exam_id) as
+      { finished_at: number | null } | undefined;
+    return exam?.finished_at !== null && exam?.finished_at !== undefined;
+  }
+  if (!row.run_id) return true;
+  const run = ctx.db.prepare('SELECT finished_at FROM runs WHERE id = ?').get(row.run_id) as
     { finished_at: number | null } | undefined;
-  return row?.finished_at !== null && row?.finished_at !== undefined;
+  return run?.finished_at !== null && run?.finished_at !== undefined;
+}
+
+/** Why the problem was chosen. The skill it serves stays unnamed while the topic is hidden. */
+function whyOf(row: ProblemRow, hidden: boolean): ProblemWhyDto | null {
+  if (!isPurpose(row.purpose)) return null;
+  const reason = fromJson<{ because?: ProblemWhyDto['because']; forSkill?: string | null }>(row.reason, {});
+  const forSkill = !hidden && reason.forSkill ? getConcept(reason.forSkill) : undefined;
+  return {
+    purpose: row.purpose,
+    because: reason.because ?? 'need',
+    forSkill: forSkill ? { id: forSkill.id, title: forSkill.title } : null,
+  };
 }
 
 // ------------------------------------------------------------------------------ issuing
@@ -256,6 +301,7 @@ export function candidatesFor(skill: string, context: string): Candidate[] {
   const out: Candidate[] = [];
   for (const generator of generatorsFor(skill)) {
     if (generator.deprecated) continue;
+    if (context === 'diagnostic' && !isDiagnosticCandidate(generator.tags)) continue;
     out.push({
       id: generator.id,
       kind: generator.kind,
@@ -265,8 +311,8 @@ export function candidatesFor(skill: string, context: string): Candidate[] {
     });
   }
   for (const problem of staticProblemsFor(skill)) {
-    // Self-assessed explanations do not belong in a timed exam or a hidden-topic review.
-    if (problem.answer.kind === 'self' && (context === 'exam' || context === 'mixed')) continue;
+    // Self-assessed explanations do not belong in a timed exam, a placement or a hidden-topic review.
+    if (problem.answer.kind === 'self' && (isQuiet(context) || context === 'mixed')) continue;
     out.push({ id: problem.id, kind: problem.kind, levels: [problem.level], sourceKind: 'static' });
   }
   return out;
@@ -281,15 +327,32 @@ export interface IssueOptions {
   staticId?: string;
   /** Prefer problem types carrying this tag, where the skill has any. */
   tag?: string;
+  /** Only problem types carrying this tag (a closed format of an examination). */
+  withTag?: string;
+  /** No problem types carrying any of these tags. */
+  withoutTags?: readonly string[];
   level?: Level;
   floor?: Level;
   cap?: Level;
   seed?: number;
   replayOf?: string;
   recent?: readonly string[];
-  lastFailed?: boolean;
-  unaidedStreak?: number;
+  /** The skill was placed by a diagnostic: start at the level its estimate suggests. */
+  byEstimate?: boolean;
+  /** Why the problem is asked, for the explanation shown with it. */
+  purpose?: Purpose;
+  reason?: Record<string, unknown>;
   states?: States;
+}
+
+/**
+ * How the learner's latest problems on a skill went, across runs and days: whether the
+ * last one was solved independently, and how many in a row were. It pitches the next one.
+ */
+function standingOf(state: { recent: readonly number[] }): { lastFailed: boolean; unaidedStreak: number } {
+  let unaidedStreak = 0;
+  for (let i = state.recent.length - 1; i >= 0 && state.recent[i]! >= CREDIT.UNAIDED; i--) unaidedStreak++;
+  return { lastFailed: state.recent.length > 0 && unaidedStreak === 0, unaidedStreak };
 }
 
 export function issueProblem(ctx: Ctx, opts: IssueOptions): ProblemRow {
@@ -298,6 +361,9 @@ export function issueProblem(ctx: Ctx, opts: IssueOptions): ProblemRow {
   let all = candidatesFor(opts.skill, opts.context);
   if (opts.generator) all = all.filter((candidate) => candidate.id === opts.generator);
   if (opts.staticId) all = all.filter((candidate) => candidate.id === opts.staticId);
+  if (opts.withTag) all = all.filter((candidate) => candidate.tags?.includes(opts.withTag!));
+  if (opts.withoutTags?.length)
+    all = all.filter((candidate) => !candidate.tags?.some((tag) => opts.withoutTags!.includes(tag)));
   if (opts.tag) {
     const tagged = all.filter((candidate) => candidate.tags?.includes(opts.tag!));
     if (tagged.length > 0) all = tagged;
@@ -312,10 +378,10 @@ export function issueProblem(ctx: Ctx, opts: IssueOptions): ProblemRow {
           theta: state.theta,
           attempts: state.attempts,
           available,
-          lastFailed: opts.lastFailed,
-          unaidedStreak: opts.unaidedStreak,
+          ...standingOf(state),
           cap: opts.cap,
           floor: opts.floor,
+          byEstimate: opts.byEstimate,
         });
 
   const seed = opts.seed ?? newSeed();
@@ -351,8 +417,8 @@ export function issueProblem(ctx: Ctx, opts: IssueOptions): ProblemRow {
   const now = ctx.now();
   ctx.db
     .prepare(
-      `INSERT INTO problems (id, run_id, exam_id, skill, source, source_kind, seed, level, kind, context, snapshot, est_seconds, issued_at, day, replay_of)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO problems (id, run_id, exam_id, skill, source, source_kind, seed, level, kind, context, snapshot, est_seconds, issued_at, day, replay_of, chance, purpose, reason)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       id,
@@ -370,6 +436,9 @@ export function issueProblem(ctx: Ctx, opts: IssueOptions): ProblemRow {
       now,
       today(ctx),
       opts.replayOf ?? null,
+      guessChance(instance.answer),
+      opts.purpose ?? null,
+      opts.reason ? toJson(opts.reason) : null,
     );
   return getProblemRow(ctx, id);
 }
@@ -405,7 +474,7 @@ export function resolveProblem(
 
     ctx.db
       .prepare(
-        'UPDATE problems SET status = ?, resolved_at = ?, seconds = ?, first_try = ?, wrong_attempts = ?, self_assessed = ? WHERE id = ?',
+        'UPDATE problems SET status = ?, resolved_at = ?, seconds = ?, first_try = ?, wrong_attempts = ?, self_assessed = ?, chance = ? WHERE id = ?',
       )
       .run(
         input.solved ? 'solved' : 'failed',
@@ -414,6 +483,8 @@ export function resolveProblem(
         firstTry ? 1 : 0,
         wrongAttempts,
         selfAssessed ? 1 : 0,
+        // Issued before the chance of guessing was recorded: read it off the problem now.
+        before.chance ?? guessChance(snapshot.answer),
         id,
       );
     const row = getProblemRow(ctx, id);
@@ -425,7 +496,14 @@ export function resolveProblem(
     saveState(ctx, effect.state);
     for (const skill of touched) saveState(ctx, states.get(skill)!);
 
-    const unaided = isUnaided({ ...facts, confidence: facts.confidence ?? undefined }) && !selfAssessed;
+    // Independent work is what earns the most; a coin flip or a declared guess is not that.
+    const unaided =
+      facts.solved &&
+      facts.firstTry &&
+      facts.hints === 0 &&
+      !selfAssessed &&
+      facts.chance < CREDIT.COIN_FLIP_CHANCE &&
+      facts.confidence !== 'guess';
     const corrected = input.solved && before.wrong_attempts > 0;
     const attempted = ctx.db.prepare('SELECT 1 FROM attempts WHERE problem_id = ? LIMIT 1').get(id) !== undefined;
     const points = pointsForProblem({
@@ -535,6 +613,41 @@ export function submitAnswer(ctx: Ctx, id: string, request: AnswerRequest): Answ
     ctx.db.prepare('UPDATE problems SET confidence = ? WHERE id = ?').run(request.confidence, id);
   }
 
+  // A placement test takes the answer and says nothing: right or wrong, it moves on.
+  if (row.context === 'diagnostic') {
+    const correct = check.verdict === 'correct';
+    if (!correct) {
+      ctx.db.prepare('UPDATE problems SET wrong_attempts = 1 WHERE id = ?').run(id);
+      const guess = inferError({
+        diagnosis: check.diagnosis,
+        predicted: predictWithChance(stateOf(loadStates(ctx), row.skill).theta, row.level as Level, row.chance ?? 0),
+        seconds,
+        expectedSeconds: row.est_seconds,
+        timed: true,
+      });
+      ctx.db
+        .prepare(
+          'UPDATE problems SET error_inferred = ?, error_basis = ?, error_note = ?, error_skill = ? WHERE id = ?',
+        )
+        .run(
+          guess.type,
+          guess.basis,
+          toJson({ note: check.diagnosis?.note ?? null, confident: guess.confident }),
+          check.diagnosis?.skill ?? null,
+          id,
+        );
+    }
+    const result = resolveProblem(ctx, id, { solved: correct, seconds });
+    return {
+      verdict: 'recorded',
+      message: null,
+      resolved: true,
+      triesLeft: 0,
+      error: null,
+      problem: problemDto(ctx, result.row, result.states),
+    };
+  }
+
   if (check.verdict === 'correct') {
     const result = resolveProblem(ctx, id, { solved: true, seconds });
     return {
@@ -569,7 +682,7 @@ export function submitAnswer(ctx: Ctx, id: string, request: AnswerRequest): Answ
     const state = stateOf(loadStates(ctx), row.skill);
     const guess = inferError({
       diagnosis: check.diagnosis,
-      predicted: predictSuccess(state.theta, row.level as Level),
+      predicted: predictWithChance(state.theta, row.level as Level, row.chance ?? 0),
       seconds,
       expectedSeconds: row.est_seconds,
     });
@@ -609,7 +722,8 @@ export function submitAnswer(ctx: Ctx, id: string, request: AnswerRequest): Answ
 export function takeHint(ctx: Ctx, id: string): ProblemDto {
   const row = getProblemRow(ctx, id);
   if (row.status !== 'open') throw new HttpError(409, 'already_resolved', 'this problem is already resolved');
-  if (row.context === 'exam') throw new HttpError(403, 'no_hints', 'hints are not available in an exam');
+  if (isQuiet(row.context))
+    throw new HttpError(403, 'no_hints', 'hints are not available in an exam or a placement test');
   const snapshot = snapshotOf(row);
   if (row.hints_used >= snapshot.hints.length) throw new HttpError(409, 'no_more_hints', 'there are no more hints');
   ctx.db.prepare('UPDATE problems SET hints_used = hints_used + 1 WHERE id = ?').run(id);
@@ -621,6 +735,7 @@ export function revealSolution(ctx: Ctx, id: string, seconds?: number): ProblemD
   const row = getProblemRow(ctx, id);
   if (row.status !== 'open') return problemDto(ctx, row);
   if (row.context === 'exam') throw new HttpError(403, 'no_reveal', 'solutions are shown after the exam');
+  // In a placement test this is "I do not know this": recorded, and the solution waits for the end.
   if (row.wrong_attempts === 0 && row.error_inferred === null) {
     // Nothing was attempted: the honest reading is "did not know how to start".
     ctx.db
@@ -704,13 +819,39 @@ function runSummary(ctx: Ctx, runId: string): RunSummaryDto {
   };
 }
 
+/** What a run that chooses as it goes was started with. */
+interface RunParams {
+  errorType?: string | null;
+  /** How many problems an adaptive session has. */
+  total?: number;
+  /** An adaptive session over these skills only (a set the teacher assigned). */
+  skills?: string[];
+  /** The assignment the run carries out; finishing the run completes it. */
+  assignment?: string;
+  /** For a placement test: the goal it places for. */
+  goal?: string;
+}
+
+const paramsOf = (row: RunRow): RunParams => fromJson<RunParams>(row.params, {});
+
+/** How many problems a run has in all, as far as that is known. */
+function runTotal(ctx: Ctx, row: RunRow): number {
+  if (row.context === 'adaptive') return paramsOf(row).total ?? 0;
+  if (row.context === 'diagnostic') {
+    if (row.finished_at !== null) return row.position;
+    return diagnosticLength((paramsOf(row).goal ?? goalOf(ctx)) as never, runProblems(ctx, row.id));
+  }
+  return fromJson<QueueItem[]>(row.queue, []).length;
+}
+
 export function runDto(ctx: Ctx, row: RunRow): RunDto {
-  const queue = fromJson<QueueItem[]>(row.queue, []);
+  const total = runTotal(ctx, row);
   return {
     id: row.id,
-    context: row.context as PracticeContext,
-    total: queue.length,
-    position: Math.min(row.position, queue.length),
+    context: row.context as RunKind,
+    diagnostic: row.context === 'diagnostic' ? diagnosticOfRun(ctx, row.id) : null,
+    total,
+    position: Math.min(row.position, total),
     finished: row.finished_at !== null,
     blockId: row.plan_block,
     title: fromJson<LText | null>(row.title, null),
@@ -727,49 +868,125 @@ function recentSources(ctx: Ctx, limit = 14): string[] {
   return rows.map((row) => row.source).reverse();
 }
 
-/** The open problem of a run, or the next one; finishes the run when the queue is done. */
+/** A seed for the choice made at one step of a run: the same step always gets the same draw. */
+function stepSeed(runId: string, step: number): number {
+  let hash = 2166136261;
+  for (const char of `${runId}:${step}`) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0 || 1;
+}
+
+/**
+ * The practice context a purpose calls for. It decides what a result proves: new material
+ * and repairs name their topic and offer hints; reviews and examination-style practice
+ * hide the topic, because recognising the kind of problem is part of the task; a stretch
+ * is a single harder problem.
+ */
+const CONTEXT_OF: Readonly<Record<Purpose, PracticeContext>> = {
+  new: 'blocked',
+  repair: 'blocked',
+  consolidate: 'blocked',
+  assigned: 'blocked',
+  confidence: 'blocked',
+  review: 'mixed',
+  exam: 'mixed',
+  stretch: 'challenge',
+};
+
+function finishRun(ctx: Ctx, run: RunRow, position: number): StartRunResponse {
+  ctx.db.prepare('UPDATE runs SET finished_at = ?, position = ? WHERE id = ?').run(ctx.now(), position, run.id);
+  if (run.context === 'diagnostic') closeDiagnostic(ctx, run.id);
+  const assignment = paramsOf(run).assignment;
+  if (assignment) completeAssignment(ctx, assignment);
+  return { run: runDto(ctx, getRunRow(ctx, run.id)), problem: null };
+}
+
+/**
+ * The open problem of a run, or the next one; finishes the run when there is none.
+ *
+ * A run with a queue takes the next entry. An adaptive session has no queue: it scores the
+ * skills of the goal again at every step and takes the best the session's rules allow, so
+ * what happened a minute ago changes what comes now. A placement test asks what its
+ * answers so far call for.
+ */
 export function nextInRun(ctx: Ctx, runId: string): StartRunResponse {
   const run = getRunRow(ctx, runId);
   if (run.finished_at !== null) return { run: runDto(ctx, run), problem: null };
   const problems = runProblems(ctx, runId);
   const open = problems.find((p) => p.status === 'open');
   if (open) return { run: runDto(ctx, run), problem: problemDto(ctx, open) };
+  const position = problems.length;
+  const issued = (row: ProblemRow): StartRunResponse => {
+    ctx.db.prepare('UPDATE runs SET position = ? WHERE id = ?').run(position + 1, runId);
+    return { run: runDto(ctx, getRunRow(ctx, runId)), problem: problemDto(ctx, row) };
+  };
+
+  if (run.context === 'diagnostic') {
+    const item = chooseDiagnostic((paramsOf(run).goal ?? goalOf(ctx)) as never, problems);
+    if (!item) return finishRun(ctx, run, position);
+    return issued(
+      issueProblem(ctx, {
+        skill: item.skill,
+        context: 'diagnostic',
+        runId,
+        level: item.level,
+        // A second problem on a skill comes in another form than the first.
+        recent: problems.map((p) => p.source),
+        reason: { stage: item.stage, anchor: item.anchor },
+      }),
+    );
+  }
+
+  if (run.context === 'adaptive') {
+    const params = paramsOf(run);
+    if (position >= (params.total ?? 0)) return finishRun(ctx, run, position);
+    const states = loadStates(ctx);
+    const selection = selectionFor(ctx, states);
+    const wanted = params.skills && params.skills.length > 0 ? new Set(params.skills) : null;
+    const scored = wanted ? selection.scored.filter((entry) => wanted.has(entry.id)) : selection.scored;
+    const choice = pickNext(scored, selection.skills, sessionItems(problems), createRng(stepSeed(runId, position)));
+    if (!choice) {
+      if (position === 0)
+        throw new HttpError(422, 'nothing_to_practise', 'there is nothing to practise for this goal yet');
+      return finishRun(ctx, run, position);
+    }
+    return issued(
+      issueProblem(ctx, {
+        skill: choice.skill,
+        context: CONTEXT_OF[choice.purpose],
+        runId,
+        cap: choice.cap,
+        floor: choice.floor,
+        byEstimate: choice.byEstimate,
+        purpose: choice.purpose,
+        reason: { because: choice.because, forSkill: choice.blockedSkill },
+        recent: recentSources(ctx),
+        states,
+      }),
+    );
+  }
 
   const queue = fromJson<QueueItem[]>(run.queue, []);
-  const position = problems.length;
-  if (position >= queue.length) {
-    ctx.db.prepare('UPDATE runs SET finished_at = ?, position = ? WHERE id = ?').run(ctx.now(), queue.length, runId);
-    return { run: runDto(ctx, getRunRow(ctx, runId)), problem: null };
-  }
-
+  if (position >= queue.length) return finishRun(ctx, run, queue.length);
   const item = queue[position]!;
-  const sameSkill = problems.filter((p) => p.skill === item.skill);
-  const last = sameSkill[sameSkill.length - 1];
-  let unaidedStreak = 0;
-  for (let i = sameSkill.length - 1; i >= 0; i--) {
-    const p = sameSkill[i]!;
-    if (p.status === 'solved' && p.first_try === 1 && p.hints_used + p.tutor_used === 0) unaidedStreak++;
-    else break;
-  }
-  const row = issueProblem(ctx, {
-    skill: item.skill,
-    context: run.context as PracticeContext,
-    runId,
-    generator: item.generator,
-    staticId: item.staticId,
-    level: item.level,
-    floor: item.floor,
-    cap: item.cap,
-    seed: item.seed,
-    replayOf: item.replayOf,
-    recent: recentSources(ctx),
-    lastFailed:
-      last !== undefined &&
-      !(last.status === 'solved' && last.first_try === 1 && last.hints_used + last.tutor_used === 0),
-    unaidedStreak,
-  });
-  ctx.db.prepare('UPDATE runs SET position = ? WHERE id = ?').run(position + 1, runId);
-  return { run: runDto(ctx, getRunRow(ctx, runId)), problem: problemDto(ctx, row) };
+  return issued(
+    issueProblem(ctx, {
+      skill: item.skill,
+      context: run.context as PracticeContext,
+      runId,
+      generator: item.generator,
+      staticId: item.staticId,
+      level: item.level,
+      floor: item.floor,
+      cap: item.cap,
+      seed: item.seed,
+      replayOf: item.replayOf,
+      purpose: paramsOf(run).assignment ? 'assigned' : undefined,
+      recent: recentSources(ctx),
+    }),
+  );
 }
 
 /** Which error types each generator can produce, found by sampling it once at start-up. */
@@ -811,9 +1028,11 @@ function drillQueue(ctx: Ctx, errorType: ErrorType, count: number, states: State
     .all(errorType) as { source: string; n: number }[];
   for (const row of rows) missed.set(row.source, row.n);
 
+  const inGoal = new Set(conceptsOfGoal(goalOf(ctx)).map((concept) => concept.id));
   const weighted: (readonly [QueueItem, number])[] = [];
   for (const generator of GENERATORS) {
-    if (generator.deprecated || !profile.get(generator.id)?.has(errorType)) continue;
+    if (generator.deprecated || !inGoal.has(generator.concept)) continue;
+    if (!profile.get(generator.id)?.has(errorType)) continue;
     const state = states.get(generator.concept);
     const seen = state !== undefined && state.attempts > 0;
     let weight = seen ? 2 : 0.4;
@@ -836,14 +1055,29 @@ function drillQueue(ctx: Ctx, errorType: ErrorType, count: number, states: State
   return queue;
 }
 
-export function startRun(ctx: Ctx, request: StartRunRequest): StartRunResponse {
+/** What only the server itself may ask of a new run: a prepared queue, a title, an assignment. */
+export interface RunExtras {
+  queue?: QueueItem[];
+  title?: LText;
+  /** The assignment the run carries out. */
+  assignment?: string;
+}
+
+export type { QueueItem };
+
+export function startRun(ctx: Ctx, request: StartRunRequest, extras: RunExtras = {}): StartRunResponse {
   const states = loadStates(ctx);
   const rng = createRng(newSeed());
+  const inGoal = new Set(conceptsOfGoal(goalOf(ctx)).map((concept) => concept.id));
   let queue: QueueItem[] = [];
   let title: LText | null = null;
-  let context: PracticeContext = request.context;
+  let context: RunKind = request.context;
+  const params: RunParams = { errorType: request.errorType ?? null };
+  if (extras.assignment) params.assignment = extras.assignment;
 
-  if (request.replayOf) {
+  if (extras.queue) {
+    queue = extras.queue;
+  } else if (request.replayOf) {
     const original = getProblemRow(ctx, request.replayOf);
     context = 'drill';
     queue = [
@@ -891,7 +1125,7 @@ export function startRun(ctx: Ctx, request: StartRunRequest): StartRunResponse {
             .filter((id) => candidatesFor(id, 'mixed').length > 0);
         } else {
           const practised = [...states.values()].filter(
-            (s) => s.attempts > 0 && candidatesFor(s.skill, 'mixed').length > 0,
+            (s) => s.attempts > 0 && inGoal.has(s.skill) && candidatesFor(s.skill, 'mixed').length > 0,
           );
           const due = practised
             .filter((s) => s.card !== null && s.card.due <= now)
@@ -916,25 +1150,71 @@ export function startRun(ctx: Ctx, request: StartRunRequest): StartRunResponse {
         title = L('Cílený trénink', 'Targeted drill');
         break;
       }
+      case 'adaptive': {
+        // No queue: every problem is chosen when its turn comes (nextInRun).
+        params.total = Math.min(30, Math.max(3, request.count ?? 10));
+        const chosen = (request.skills ?? []).filter((id) => inGoal.has(id) && candidatesFor(id, 'blocked').length > 0);
+        if (request.skills && request.skills.length > 0) {
+          // Two at least, or the rule against the same skill twice in a row leaves nothing to ask.
+          if (chosen.length < 2) throw badRequest('an adaptive session over chosen skills needs at least two of them');
+          params.skills = chosen;
+        }
+        title = L('Adaptivní procvičování', 'Adaptive practice');
+        break;
+      }
       default:
         throw badRequest(`cannot start a run in context "${request.context}"`);
     }
   }
 
   const id = newId();
-  ctx.db
-    .prepare(
-      'INSERT INTO runs (id, context, day, plan_block, title, queue, params, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    )
-    .run(
-      id,
-      context,
-      today(ctx),
-      request.blockId ?? null,
-      title ? toJson(title) : null,
-      toJson(queue),
-      toJson({ errorType: request.errorType ?? null }),
-      ctx.now(),
-    );
-  return nextInRun(ctx, id);
+  // A run that turns out to have nothing to ask leaves no trace.
+  return ctx.db.transaction(() => {
+    ctx.db
+      .prepare(
+        'INSERT INTO runs (id, context, day, plan_block, title, queue, params, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        id,
+        context,
+        today(ctx),
+        request.blockId ?? null,
+        (extras.title ?? title) ? toJson(extras.title ?? title) : null,
+        toJson(queue),
+        toJson(params),
+        ctx.now(),
+      );
+    return nextInRun(ctx, id);
+  })();
+}
+
+/**
+ * Start the placement test of the learner's goal, or go on with one that was begun. It is
+ * a run like any other, in a context of its own: no hints, one answer, nothing said until
+ * the end.
+ */
+export function startDiagnostic(ctx: Ctx, blockId?: string): StartRunResponse {
+  const goal = goalOf(ctx);
+  if (!hasDiagnostic(goal)) throw new HttpError(422, 'no_diagnostic', 'there is no placement test for this goal');
+  const running = diagnosticStatus(ctx, goal).running;
+  if (running) return nextInRun(ctx, running);
+  const id = newId();
+  return ctx.db.transaction(() => {
+    ctx.db
+      .prepare(
+        'INSERT INTO runs (id, context, day, plan_block, title, queue, params, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        id,
+        'diagnostic',
+        today(ctx),
+        blockId ?? null,
+        toJson(L('Rozřazovací test', 'Placement test')),
+        '[]',
+        toJson({ goal }),
+        ctx.now(),
+      );
+    openDiagnostic(ctx, newId(), goal, id);
+    return nextInRun(ctx, id);
+  })();
 }

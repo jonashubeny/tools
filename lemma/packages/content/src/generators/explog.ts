@@ -10,7 +10,7 @@ import {
   type Frac,
   type Generator,
 } from '@lemma/core';
-import { gen, leadIn, leadTex, mapL, mc, nz, shiftIn, shiftTex, step, tailIn, tailTex } from './helpers';
+import { gen, leadIn, leadTex, mapL, mc, nz, plural, shiftIn, shiftTex, step, tailIn, tailTex } from './helpers';
 
 /** A base for display inside a power: 3 or (1/2). */
 export const baseTex = (b: Frac): string => (b.d === 1 ? `${b.n}` : `\\left(${fToTex(b)}\\right)`);
@@ -350,7 +350,7 @@ export const EXPLOG_GENERATORS: Generator[] = [
           const total = k * period;
           return {
             prompt: L(
-              `Počet bakterií v kultuře se každé ${period} ${unit.cs} zdvojnásobí. Na začátku jich je ${start}. Kolik jich bude za ${total} ${period >= 20 ? 'minut' : 'hodin'}?`,
+              `Počet bakterií v kultuře se ${plural(period, 'každou', 'každé', 'každých')} ${period} ${unit.cs} zdvojnásobí. Na začátku jich je ${start}. Kolik jich bude za ${total} ${period >= 20 ? 'minut' : plural(total, 'hodinu', 'hodiny', 'hodin')}?`,
               `The number of bacteria in a culture doubles every ${period} ${unit.en}. There are ${start} at the start. How many will there be after ${total} ${period >= 20 ? 'minutes' : 'hours'}?`,
             ),
             answer: { kind: 'number', value: `${start * 2 ** k}` },
@@ -394,7 +394,7 @@ export const EXPLOG_GENERATORS: Generator[] = [
         const start = 2 ** k * r.pick([5, 10, 25]);
         return {
           prompt: L(
-            `Látka má poločas rozpadu ${half} dní. Na začátku je jí ${start} mg. Kolik miligramů zbude za ${half * k} dní?`,
+            `Látka má poločas rozpadu ${half} ${plural(half, 'den', 'dny', 'dní')}. Na začátku je jí ${start} mg. Kolik miligramů zbude za ${half * k} dní?`,
             `A substance has a half-life of ${half} days. There are ${start} mg at the start. How many milligrams remain after ${half * k} days?`,
           ),
           answer: { kind: 'number', value: `${start / 2 ** k}` },

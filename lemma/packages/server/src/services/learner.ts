@@ -2,9 +2,12 @@ import {
   CONCEPTS,
   CONTENT_VERSION,
   SYLLABUS,
+  conceptsOfGoal,
   conceptsOfTopic,
+  familyCountOf,
   getConcept,
   getLesson,
+  goalSkillOf,
   hasProblems,
   topLevelOf,
 } from '@lemma/content';
@@ -12,8 +15,13 @@ import {
   MODEL_VERSION,
   applyAttempt,
   applyImplicitCredit,
+  applyPlacement,
+  confidenceOf,
+  dependentsOf,
   dueInDays,
   emptySkillState,
+  guessChance,
+  holdsBack,
   isDue,
   isErrorType,
   isFading,
@@ -21,23 +29,29 @@ import {
   levelOf,
   markDueNow,
   markLessonSeen,
+  pathPositionOf,
+  placementSignals,
+  prereqEvidence,
   priorTheta,
   progressOf,
   retrievability,
+  type AnswerSpec,
   type AttemptEffect,
   type Concept,
   type Confidence,
   type ErrorType,
+  type GoalId,
   type Level,
   type MasteryLevel,
   type PracticeContext,
   type ResolvedAttempt,
   type SkillDto,
+  type SkillGraph,
   type SkillState,
   type SyllabusTopicDto,
 } from '@lemma/core';
 import { fromJson, toJson } from '../db';
-import type { Ctx } from './context';
+import { type Ctx, goalOf } from './context';
 
 /**
  * The learner model in the database: one cached state per concept, derived from the log
@@ -97,13 +111,31 @@ export interface ResolvedFacts {
   errorSkill: string | null;
   selfAssessed: boolean;
   at: number;
+  /** The generator or static problem the attempt belongs to. */
+  family: string | null;
+  /** How likely a right answer was by guessing. */
+  chance: number;
 }
 
 export interface ResolutionResult {
   effect: AttemptEffect;
-  /** Other skills whose state changed (implicit reviews, prerequisites made due). */
+  /** Other skills whose state changed (implicit reviews, prerequisites made due, placements). */
   touched: string[];
 }
+
+/** The prerequisite graph over every concept, as the placement rules walk it. */
+const dependentsIndex = new Map<string, string[]>();
+export const SKILL_GRAPH: SkillGraph = {
+  prereqs: (skill) => getConcept(skill)?.prereqs ?? [],
+  dependents: (skill) => {
+    let found = dependentsIndex.get(skill);
+    if (!found) {
+      found = dependentsOf(CONCEPTS, skill);
+      dependentsIndex.set(skill, found);
+    }
+    return found;
+  },
+};
 
 /** Apply one resolved problem to a set of states. Mutates `states`. */
 export function applyResolved(states: States, facts: ResolvedFacts): ResolutionResult {
@@ -122,10 +154,32 @@ export function applyResolved(states: States, facts: ResolvedFacts): ResolutionR
     selfAssessed: facts.selfAssessed,
     at: facts.at,
     ceiling: topLevelOf(facts.skill),
+    family: facts.family ?? undefined,
+    families: familyCountOf(facts.skill),
+    chance: facts.chance,
   };
   const effect = applyAttempt(stateOf(states, facts.skill), attempt);
   states.set(facts.skill, effect.state);
   const touched: string[] = [];
+
+  // A placement test also says something about the skills around the one it asked.
+  if (facts.context === 'diagnostic') {
+    const signals = placementSignals(SKILL_GRAPH, {
+      skill: facts.skill,
+      level: facts.level,
+      unaided: isUnaided(attempt),
+      solved: facts.solved,
+    });
+    for (const signal of signals) {
+      const neighbour = getConcept(signal.skill);
+      if (!neighbour || neighbour.deprecated || !hasProblems(signal.skill)) continue;
+      const placed = applyPlacement(states.get(signal.skill), signal, facts.at);
+      if (placed) {
+        states.set(signal.skill, placed);
+        touched.push(signal.skill);
+      }
+    }
+  }
 
   const concept = getConcept(facts.skill);
   if (concept && isUnaided(attempt) && !facts.selfAssessed) {
@@ -154,6 +208,8 @@ export function applyResolved(states: States, facts: ResolvedFacts): ResolutionR
 
 interface ReplayRow {
   skill: string;
+  source: string;
+  chance: number | null;
   level: number;
   context: string;
   status: string;
@@ -191,7 +247,29 @@ export function factsFromRow(row: ReplayRow): ResolvedFacts {
     errorSkill: row.error_skill,
     selfAssessed: row.self_assessed === 1,
     at: row.resolved_at,
+    family: row.source,
+    chance: row.chance ?? 0,
   };
+}
+
+/**
+ * Problems issued before the chance of guessing was recorded: read it off the stored
+ * snapshot, once. A typed answer has none; a choice has one in the number of its options.
+ */
+function backfillChance(ctx: Ctx): number {
+  const rows = ctx.db.prepare('SELECT id, snapshot FROM problems WHERE chance IS NULL').all() as {
+    id: string;
+    snapshot: string;
+  }[];
+  if (rows.length === 0) return 0;
+  const update = ctx.db.prepare('UPDATE problems SET chance = ? WHERE id = ?');
+  ctx.db.transaction(() => {
+    for (const row of rows) {
+      const answer = fromJson<{ answer?: AnswerSpec } | null>(row.snapshot, null)?.answer;
+      update.run(answer ? guessChance(answer) : 0, row.id);
+    }
+  })();
+  return rows.length;
 }
 
 /**
@@ -231,9 +309,10 @@ export function ensureModelCurrent(ctx: Ctx): {
  * error is reclassified, or simply to check that the cache is consistent.
  */
 export function replayAll(ctx: Ctx): { skills: number; problems: number } {
+  backfillChance(ctx);
   const problems = ctx.db
     .prepare(
-      `SELECT skill, level, context, status, first_try, hints_used, tutor_used, wrong_attempts, seconds, est_seconds, confidence,
+      `SELECT skill, source, chance, level, context, status, first_try, hints_used, tutor_used, wrong_attempts, seconds, est_seconds, confidence,
               error_inferred, error_confirmed, error_skill, self_assessed, resolved_at
        FROM problems WHERE status IN ('solved', 'failed') AND resolved_at IS NOT NULL ORDER BY resolved_at, rowid`,
     )
@@ -271,13 +350,31 @@ export function lessonDoneSet(ctx: Ctx): Set<string> {
   return new Set(rows.map((row) => row.concept));
 }
 
-export function skillDto(concept: Concept, states: States, lessonsDone: Set<string>, now: number): SkillDto {
+/**
+ * A direct prerequisite that is in the way — by the same rule the selection uses: below
+ * "familiar", not made likely by a diagnostic, and without a promising start of its own.
+ */
+export function weakPrereqOf(concept: Concept, states: States): string | null {
+  const weak = concept.prereqs
+    .filter((id) => getConcept(id) !== undefined && hasProblems(id))
+    .map((id) => ({ id, evidence: prereqEvidence(states.get(id)) }))
+    .filter(({ evidence }) => holdsBack(evidence))
+    .sort((a, b) => a.evidence.level - b.evidence.level || a.evidence.theta - b.evidence.theta)[0];
+  return weak?.id ?? null;
+}
+
+export function skillDto(
+  concept: Concept,
+  states: States,
+  lessonsDone: Set<string>,
+  now: number,
+  goal: GoalId,
+): SkillDto {
   const state = states.get(concept.id);
   const level: MasteryLevel = state ? levelOf(state) : 0;
-  const weak = concept.prereqs.find((id) => {
-    const pre = states.get(id);
-    return (pre ? levelOf(pre) : 0) < 3 && getConcept(id) !== undefined && hasProblems(id);
-  });
+  const weak = weakPrereqOf(concept, states);
+  const inGoal = goalSkillOf(goal, concept.id);
+  const position = pathPositionOf(state, now);
   return {
     id: concept.id,
     title: concept.title,
@@ -300,14 +397,22 @@ export function skillDto(concept: Concept, states: States, lessonsDone: Set<stri
     lastPracticedAt: state?.lastPracticedAt ?? null,
     fit: concept.fit ?? [],
     annualReview: concept.annualReview ?? false,
-    weakPrereq: weak ?? null,
+    weakPrereq: weak,
+    role: inGoal?.role ?? null,
+    weight: inGoal?.weight ?? 0,
+    stage: concept.stage ?? null,
+    paperOnly: concept.paperOnly ?? false,
+    path: position.state,
+    pathReason: position.reason,
+    confidence: confidenceOf(state),
   };
 }
 
-export function allSkills(ctx: Ctx, states: States = loadStates(ctx)): SkillDto[] {
+/** Every skill of the learner's goal, in teaching order. */
+export function allSkills(ctx: Ctx, states: States = loadStates(ctx), goal: GoalId = goalOf(ctx)): SkillDto[] {
   const done = lessonDoneSet(ctx);
   const now = ctx.now();
-  return CONCEPTS.filter((concept) => !concept.deprecated).map((concept) => skillDto(concept, states, done, now));
+  return conceptsOfGoal(goal).map((concept) => skillDto(concept, states, done, now, goal));
 }
 
 export function topicDtos(skills: readonly SkillDto[], currentTopic: number | null): SyllabusTopicDto[] {

@@ -1,27 +1,47 @@
-import { ANNUAL_REVIEW_TAG, CONCEPTS, EXAM_BLUEPRINTS, SYLLABUS, getConcept } from '@lemma/content';
+import {
+  ANNUAL_REVIEW_TAG,
+  CONCEPTS,
+  EXAM_BLUEPRINTS,
+  FORMAT_TAGS,
+  SYLLABUS,
+  WEIGHT_FLOOR,
+  blueprintsOfGoal,
+  conceptsOfGoal,
+  getConcept,
+  getGoal,
+  goalSkillOf,
+} from '@lemma/content';
 import {
   type CreateExamRequest,
   type ErrorType,
+  type ExamBlueprint,
   type ExamDto,
   type ExamItemResult,
   type ExamListItemDto,
   type ExamReportDto,
+  type ExamScoring,
+  type ExamSlot,
+  type ExamStructureDto,
   type L as LText,
   type Level,
+  type SlotFormat,
   L,
   checkAnswer,
   createRng,
+  dueInDays,
   examReport,
   inferError,
   isErrorType,
+  itemPoints,
   levelsForMix,
   nearestAvailableLevel,
   pointsForExam,
-  predictSuccess,
+  predictWithChance,
 } from '@lemma/core';
 import { fromJson, toJson } from '../db';
 import { addEvent, award } from './activity';
-import { type Ctx, HttpError, badRequest, getSettings, newId, newSeed, notFound } from './context';
+import { completeTestAssignment } from './assignments';
+import { type Ctx, HttpError, badRequest, getSettings, goalOf, newId, newSeed, notFound } from './context';
 import { loadStates, stateOf } from './learner';
 import {
   type ProblemRow,
@@ -39,6 +59,11 @@ interface StoredItem {
   problemId: string;
   input: string;
   seconds: number;
+  /** For a test with a fixed structure: the slot the problem fills. */
+  label?: string;
+  points?: number;
+  format?: SlotFormat;
+  bundle?: string;
 }
 
 interface ExamRow {
@@ -67,6 +92,16 @@ function conceptsForExam(ctx: Ctx, request: CreateExamRequest, kind: 'chapter' |
   if (request.concepts && request.concepts.length > 0) return request.concepts.filter(usable);
 
   const settings = getSettings(ctx);
+  // An examination goal has no chapters: a short test draws on what has been practised,
+  // or, before anything has, on what the examination asks.
+  if (getGoal(settings.goal).kind === 'entrance') {
+    const states = loadStates(ctx);
+    const inGoal = conceptsOfGoal(settings.goal)
+      .map((concept) => concept.id)
+      .filter(usable);
+    const practised = inGoal.filter((id) => (states.get(id)?.attempts ?? 0) > 0);
+    return practised.length >= 3 ? practised : inGoal.filter((id) => goalSkillOf(settings.goal, id)?.role === 'tested');
+  }
   let topics = request.topics?.filter((n) => SYLLABUS.some((topic) => topic.n === n)) ?? [];
   if (topics.length === 0) {
     if (kind === 'annual') {
@@ -120,9 +155,112 @@ function conceptOrder(
   return order.slice(0, items);
 }
 
+const CLOSED_TAGS = Object.values(FORMAT_TAGS);
+
+/** The problem types of a skill that can fill a slot of the given format. */
+function slotCandidates(skill: string, format: SlotFormat): ReturnType<typeof candidatesFor> {
+  return candidatesFor(skill, 'exam').filter((candidate) =>
+    format === 'open'
+      ? !candidate.tags?.some((tag) => CLOSED_TAGS.includes(tag))
+      : candidate.tags?.includes(FORMAT_TAGS[format]),
+  );
+}
+
+/**
+ * A practice test that follows an examination's own structure: one problem per slot, in
+ * the slot's format and worth the slot's points. Where a slot offers several skills, one
+ * is drawn by its weight in the examination, less likely each time it has been used.
+ */
+function createEntranceExam(ctx: Ctx, blueprint: ExamBlueprint): ExamDto {
+  const goal = blueprint.goal!;
+  const slots = blueprint.slots ?? [];
+  const rng = createRng(newSeed());
+  const states = loadStates(ctx);
+  const id = newId();
+  const now = ctx.now();
+  const items: StoredItem[] = [];
+  const usedSources: string[] = [];
+  const usedSkills = new Map<string, number>();
+
+  ctx.db.transaction(() => {
+    ctx.db
+      .prepare(
+        'INSERT INTO exams (id, blueprint, title, minutes, started_at, deadline_at, items) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(id, blueprint.id, toJson(blueprint.title), blueprint.minutes, now, now + blueprint.minutes * 60_000, '[]');
+    for (const slot of slots) {
+      const offered = slot.skills.filter((skill) => slotCandidates(skill, slot.format).length > 0);
+      if (offered.length === 0)
+        throw new HttpError(422, 'no_problems', `there are no problems for task ${slot.label} of this test`);
+      const skill = rng.weighted(
+        offered.map(
+          (candidate) =>
+            [
+              candidate,
+              (goalSkillOf(goal, candidate)?.weight || WEIGHT_FLOOR) / (1 + 2 * (usedSkills.get(candidate) ?? 0)),
+            ] as const,
+        ),
+      );
+      usedSkills.set(skill, (usedSkills.get(skill) ?? 0) + 1);
+      const available = [...new Set(slotCandidates(skill, slot.format).flatMap((candidate) => candidate.levels))];
+      const row = issueProblem(ctx, {
+        skill,
+        context: 'exam',
+        examId: id,
+        level: nearestAvailableLevel(available, slot.level),
+        ...(slot.format === 'open' ? { withoutTags: CLOSED_TAGS } : { withTag: FORMAT_TAGS[slot.format] }),
+        recent: usedSources,
+        states,
+      });
+      usedSources.push(row.source);
+      items.push({
+        problemId: row.id,
+        input: '',
+        seconds: 0,
+        label: slot.label,
+        points: slot.points,
+        format: slot.format,
+        ...(slot.bundle ? { bundle: slot.bundle } : {}),
+      });
+    }
+    ctx.db.prepare('UPDATE exams SET items = ? WHERE id = ?').run(toJson(items), id);
+  })();
+  return getExam(ctx, id);
+}
+
+const blueprintById = (id: string): ExamBlueprint | undefined => EXAM_BLUEPRINTS.find((b) => b.id === id);
+
+/** What a structured practice test covers of the real one; null for the school's tests. */
+function structureOf(blueprint: ExamBlueprint | undefined): ExamStructureDto | null {
+  if (!blueprint || blueprint.kind !== 'entrance' || !blueprint.goal) return null;
+  const bundles = blueprint.bundles ?? {};
+  const loose = (blueprint.slots ?? [])
+    .filter((slot: ExamSlot) => !slot.bundle)
+    .reduce((sum, slot) => sum + slot.points, 0);
+  const bundled = Object.values(bundles).reduce((sum, table) => sum + (table[table.length - 1] ?? 0), 0);
+  return {
+    goal: blueprint.goal,
+    examPoints: getGoal(blueprint.goal).facts?.points ?? loose + bundled,
+    onScreenPoints: loose + bundled,
+    offScreenPoints: blueprint.offScreenPoints ?? 0,
+    bundles,
+  };
+}
+
+/** How a test scores: the school's by grade scale, an examination's by its bundles and no grade. */
+function scoringOf(ctx: Ctx, blueprint: ExamBlueprint | undefined): ExamScoring {
+  return blueprint?.kind === 'entrance'
+    ? { scale: null, bundles: blueprint.bundles ?? {} }
+    : { scale: getSettings(ctx).gradeScale };
+}
+
 export function createExam(ctx: Ctx, request: CreateExamRequest): ExamDto {
-  const blueprint = EXAM_BLUEPRINTS.find((b) => b.id === request.blueprint);
+  const blueprint = blueprintById(request.blueprint);
   if (!blueprint) throw badRequest('unknown exam blueprint');
+  // A learner is offered the tests of their own goal, and can start no others.
+  if (!blueprintsOfGoal(goalOf(ctx)).some((offered) => offered.id === blueprint.id))
+    throw new HttpError(403, 'not_your_test', 'this test does not belong to your goal');
+  if (blueprint.kind === 'entrance') return createEntranceExam(ctx, blueprint);
   const concepts = conceptsForExam(ctx, request, blueprint.kind);
   if (concepts.length === 0) throw new HttpError(422, 'no_problems', 'there are no problems for the chosen topics yet');
 
@@ -182,8 +320,13 @@ function toDto(ctx: Ctx, row: ExamRow): ExamDto {
       problem: problemDto(ctx, getProblemRow(ctx, item.problemId), states),
       input: item.input,
       seconds: item.seconds,
+      slot:
+        item.label !== undefined
+          ? { label: item.label, points: item.points ?? 0, format: item.format ?? 'open', bundle: item.bundle ?? null }
+          : null,
     })),
     report: fromJson<ExamReportDto | null>(row.report, null),
+    structure: structureOf(blueprintById(row.blueprint)),
   };
 }
 
@@ -219,6 +362,8 @@ export function finishExam(ctx: Ctx, id: string): ExamDto {
   const items = fromJson<StoredItem[]>(row.items, []);
   const settings = getSettings(ctx);
   const now = ctx.now();
+  const blueprint = blueprintById(row.blueprint);
+  const scoring = scoringOf(ctx, blueprint);
   // Predictions are taken before any item is scored, so they describe the state the
   // learner walked in with.
   const before = loadStates(ctx);
@@ -229,7 +374,11 @@ export function finishExam(ctx: Ctx, id: string): ExamDto {
     items.forEach((item, index) => {
       const problem = getProblemRow(ctx, item.problemId);
       const snapshot = snapshotOf(problem);
-      const predicted = predictSuccess(stateOf(before, problem.skill).theta, problem.level as Level);
+      const predicted = predictWithChance(
+        stateOf(before, problem.skill).theta,
+        problem.level as Level,
+        problem.chance ?? 0,
+      );
       const answered = item.input.trim() !== '';
       const seconds = Math.max(1, item.seconds || 1);
       let correct = false;
@@ -289,13 +438,15 @@ export function finishExam(ctx: Ctx, id: string): ExamDto {
       results.push({
         skill: problem.skill,
         level: problem.level as Level,
-        points: problem.level,
+        // The school's tests weigh an item by its level; an examination's by its slot.
+        points: item.points ?? problem.level,
         answered,
         correct,
         seconds: item.seconds,
         expectedSeconds: problem.est_seconds,
         predicted,
         errorType: error,
+        ...(item.bundle ? { bundle: item.bundle } : {}),
       });
       details.push({
         index,
@@ -307,14 +458,34 @@ export function finishExam(ctx: Ctx, id: string): ExamDto {
         error,
         seconds: item.seconds,
         expectedSeconds: problem.est_seconds,
+        ...(item.label !== undefined ? { label: item.label, bundle: item.bundle ?? null } : {}),
       });
     });
 
-    const report = examReport(results, row.minutes * 60, settings.gradeScale);
+    const report = examReport(results, row.minutes * 60, scoring);
     const skillTitles: Record<string, LText> = {};
     for (const result of results)
       skillTitles[result.skill] = getConcept(result.skill)?.title ?? L(result.skill, result.skill);
+    const structure = structureOf(blueprint);
     const full: ExamReportDto = { ...report, skillTitles, details };
+    if (structure) {
+      const worth = itemPoints(results, scoring.bundles ?? {});
+      details.forEach((detail, index) => {
+        detail.points = Math.round(worth[index]!.max * 100) / 100;
+        detail.earned = Math.round(worth[index]!.earned * 100) / 100;
+      });
+      // When each missed skill comes back, as the review schedule now has it.
+      const after = loadStates(ctx);
+      full.followUp = report.next.slice(0, 8).map((entry) => {
+        const due = dueInDays(after.get(entry.skill)?.card ?? null, now);
+        return {
+          skill: entry.skill,
+          inDays: Math.max(0, Math.ceil(due ?? 1)),
+          kind: entry.mostly === 'slip' ? ('review' as const) : ('repair' as const),
+        };
+      });
+      full.structure = structure;
+    }
     ctx.db.prepare('UPDATE exams SET finished_at = ?, report = ? WHERE id = ?').run(now, toJson(full), id);
     addEvent(ctx, {
       type: 'exam',
@@ -324,6 +495,8 @@ export function finishExam(ctx: Ctx, id: string): ExamDto {
       payload: { percent: report.percent, blueprint: row.blueprint },
     });
     if (report.percent >= 80 && report.items >= 5) award(ctx, 'exam-80');
+    // A test the teacher asked for is done with this.
+    completeTestAssignment(ctx, id, row.blueprint);
   })();
   return toDto(ctx, examRow(ctx, id));
 }
@@ -333,25 +506,28 @@ export function refreshExamReport(ctx: Ctx, id: string): ExamDto {
   const row = examRow(ctx, id);
   const report = fromJson<ExamReportDto | null>(row.report, null);
   if (row.finished_at === null || !report) return toDto(ctx, row);
-  const settings = getSettings(ctx);
+  const stored = fromJson<StoredItem[]>(row.items, []);
   const results: ExamItemResult[] = report.details.map((detail) => {
     const problem: ProblemRow = getProblemRow(ctx, detail.problemId);
     const confirmed = problem.error_confirmed ?? problem.error_inferred;
     detail.error = isErrorType(confirmed) && !detail.correct && detail.answered ? confirmed : null;
+    const item = stored[detail.index];
     return {
       skill: detail.skill,
       level: problem.level as Level,
-      points: problem.level,
+      points: item?.points ?? problem.level,
       answered: detail.answered,
       correct: detail.correct,
       seconds: detail.seconds,
       expectedSeconds: detail.expectedSeconds,
       predicted: problem.predicted ?? 0.5,
       errorType: detail.error,
+      ...(item?.bundle ? { bundle: item.bundle } : {}),
     };
   });
   const updated: ExamReportDto = {
-    ...examReport(results, row.minutes * 60, settings.gradeScale),
+    ...report,
+    ...examReport(results, row.minutes * 60, scoringOf(ctx, blueprintById(row.blueprint))),
     skillTitles: report.skillTitles,
     details: report.details,
   };
@@ -363,14 +539,18 @@ export function listExams(ctx: Ctx): ExamListItemDto[] {
   const rows = ctx.db.prepare('SELECT * FROM exams ORDER BY started_at DESC LIMIT 50').all() as ExamRow[];
   return rows.map((row) => {
     const report = fromJson<ExamReportDto | null>(row.report, null);
+    const structured = blueprintById(row.blueprint)?.kind === 'entrance';
     return {
       id: row.id,
+      blueprint: row.blueprint,
       title: fromJson<LText>(row.title, L('Zkouška', 'Exam')),
       startedAt: row.started_at,
       finishedAt: row.finished_at,
       percent: report?.percent ?? null,
       grade: report?.grade ?? null,
       items: fromJson<StoredItem[]>(row.items, []).length,
+      points: structured ? (report?.points ?? null) : null,
+      maxPoints: structured ? (report?.maxPoints ?? null) : null,
     };
   });
 }

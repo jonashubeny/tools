@@ -6,6 +6,11 @@ know, a log of the errors you actually make, and a long view towards studying at
 Whoever runs it can give friends [accounts of their own](#accounts); each of them is then
 that one learner, with data nobody else sees.
 
+An account can instead prepare for the Czech unified
+[entrance examination](#entrance-examinations) in mathematics, with a placement test, an
+adaptive choice of every next problem and practice tests in the examination's format —
+and whoever tutors that learner can be given a [teacher's view](#teaching) of their work.
+
 It is not a course platform and not a quiz game. The thing it optimises is the next useful
 piece of work: what to do today, why that, and what the evidence says about how well you
 know it.
@@ -22,6 +27,12 @@ know it.
 - **Mock exams**, a non-punishing activity heatmap and streak, a skill tree, analytics,
   missions, an optional AI tutor that never decides whether an answer is right, and a
   dated, sourced view of what FIT VUT currently asks for.
+- **Entrance examinations** — primary and lower-secondary mathematics as the official
+  specification lists it, weighed by what past papers asked for; a placement test; a next
+  problem chosen for a stated reason; readiness told as several statements, never as a
+  chance of being admitted.
+- **Teaching** — for a tutor: what each student understands, what is in the way and what
+  to do next; assignments; a mode for the lesson itself; notes the student cannot see.
 
 The interface is in Czech and English. All data stays in one SQLite file on your server.
 
@@ -37,7 +48,7 @@ To run it:
 |---|---|
 | Container engine | Docker Engine with the Compose plugin — `docker compose version` should answer with v2 or newer. Podman with `podman-compose` works as well. |
 | Machine | Anything that runs Linux containers on x86-64. 64-bit ARM should work — the image carries the SQLite driver's arm64 binary — but has not been tried. 32-bit ARM (an older Raspberry Pi OS) will not: the driver has no binary for it. |
-| Memory | About 200 MB while running (150 MB idle, 190 MB at the most with seventy days of history). Building the image peaks at about 530 MB, in the dependency install, so have 1 GB free for the first start. |
+| Memory | About 250 MB while running: 190 MB idle after a start, 245 MB at the most in a test with four accounts, two of them with seventy days of history. Building the image peaks at about 530 MB, in the dependency install, so have 1 GB free for the first start. |
 | Disk | About 250 MB for the image, and about 650 MB in all while it is being built. The data is small: 2 MB for 750 solved problems, and fifteen times that with the daily backups. |
 | Network | Only for the build: the Node base image from Docker Hub and about 80 MB of packages from the npm registry. Running needs no outside connection — nothing is loaded from a CDN. The AI tutor and the GitHub/Forgejo view call out, and only once you configure them. |
 | Port | One TCP port on the host: 8000, or whatever `LEMMA_PORT` says. |
@@ -159,6 +170,81 @@ a name as well. The same panel gives a user a new password, or removes the accou
 
 A name has 2 to 32 characters: lower-case letters, digits, dots, dashes and underscores.
 `AUTH_DISABLED=1` leaves one learner, the administrator, and no use for other accounts.
+
+## Entrance examinations
+
+Every account has a **goal**. The default is the second-year syllabus, and an account that
+keeps it sees Lemma as it always was. The other goals are the three variants of the
+unified entrance examination in mathematics (*jednotná přijímací zkouška*): for four-year
+fields (written in grade 9), six-year grammar schools (grade 7) and eight-year grammar
+schools (grade 5). A new account chooses on its first page; **Settings → Goal** changes it
+later, and so can the learner's teacher. Nothing is lost by switching: the log is kept, and
+each goal reads from it what belongs to it.
+
+With an examination goal the application is a different one:
+
+- **A placement test** first — at most 18 problems, no hints, nothing marked until the
+  end. It can be skipped; then everything starts from the basics.
+- **Today** proposes one adaptive session. Each problem in it is chosen when it is asked:
+  what the examination weighs most and you know least, what is due for review, what an
+  error pattern points at, what a weak prerequisite is holding back. The problem says why
+  it was chosen.
+- **Curriculum map** — every skill of the examination with its state (not started,
+  diagnosed, learning, practising, consolidating, mastered, needs review), the rule
+  behind the state, the official requirement it covers, and what past papers asked of it.
+- **Practice tests** in the examination's structure: the same answer fields, formats,
+  points and bundles, a time limit, and a report by skill.
+- **Readiness** — how much of the examination has been practised, how much is known, how
+  much is remembered, how a timed test went, and what is in the way. Each part appears
+  only once there is enough behind it. There is no single score and no probability.
+
+What this rests on, and how far it goes, is in
+[`docs/cermat-coverage.md`](docs/cermat-coverage.md), which is generated from the data.
+Three limits are worth knowing before relying on it:
+
+- **Geometric constructions cannot be done on a screen.** They are about a tenth of every
+  test. Lemma lists them, counts them out of its figures, and says so on the practice
+  test; they have to be practised on paper.
+- **The weights are Lemma's reading of past papers**, not something the examination's
+  authors publish: twenty papers were read for the four-year variant, four each for the
+  other two, whose weights are therefore marked provisional.
+- **Dates and rules are a snapshot** of the official site on 9 October 2026, for the
+  examination of spring 2027. The application asks for them to be checked again after
+  1 February 2027. The official source is [prijimacky.cermat.cz](https://prijimacky.cermat.cz).
+
+No task, figure or answer of an official test is in Lemma. The problems are its own.
+
+## Teaching
+
+In **Settings → Users** the administrator can name, for each account, who teaches it —
+the administrator or any other account. A teacher then has a **Students** page:
+
+- **Each student at a glance**: this week and the week before, readiness, what needs
+  attention (no placement test yet, days without practice, a skill that is stuck, a
+  recurring error, guessing, leaning on hints, an assignment overdue), and one suggested
+  next step with its reason.
+- **One student in detail**: every skill with its state and evidence, the solutions the
+  student actually submitted with time, hints and attempts, recurring errors, placement
+  and practice tests.
+- **Things to set**: the goal and the examination date; an assignment (practice of chosen
+  skills, a review, the repair of one skill, a lesson, a practice test), which goes to the
+  top of the student's plan; a skill to come back to.
+- **Side by side**: two or more students, skill by skill. No ranking and no total.
+- **A tutoring session**: before it, what to check and what to teach; during it, problems
+  to show on a shared screen with the answer one click away, and a mark of how each went;
+  after it, what was covered, what was hard, homework, and a note for next time.
+- **Private notes** about a student, optionally tied to a skill.
+
+Four rules hold, and the tests check each of them:
+
+- A teacher sees only the accounts they were named for. The administrator is nobody's
+  teacher by default — creating an account does not open its work.
+- A learner can read in Settings who sees their work.
+- Notes and session records are stored with the teacher. Nothing a student can ask for
+  contains them.
+- Nothing a teacher does changes a mastery level. Problems solved together in a session
+  are not recorded as the student's attempts; an assignment or a noted difficulty only
+  changes what is selected next.
 
 ## Putting it on the network
 
@@ -371,15 +457,27 @@ from source when installing from the lockfile.
 For development the server reads the same variables as the container; the handy ones are
 `AUTH_DISABLED=1` and `DATA_DIR=./data`.
 
-Two scripts make content work pleasant:
+A few scripts make the work pleasant:
 
 ```sh
 # A database with seventy days of plausible history, produced through the real API.
 npx tsx scripts/dev-seed.ts ./data-demo 70
 
+# A teacher and two fictional students preparing for entrance examinations, with weeks of
+# placement tests, adaptive sessions, a tutoring session and a practice test behind them.
+npx tsx scripts/dev-seed-class.ts ./data-class 24
+
 # What a generator actually produces: prompt, answer, hints, steps, misconceptions.
 npx tsx scripts/sample-problems.ts trig.unit-circle 2 cs
+
+# Regenerate docs/cermat-coverage.md after changing the entrance concepts, the
+# specification or the classified papers. A test fails while the document is stale.
+npm run jpz:coverage
 ```
+
+Both seed scripts refuse a data directory that already has learning data. The second one
+creates accounts and prints the demonstration password it gave them — change it before
+anybody else can reach such an instance.
 
 ### Layout
 
@@ -397,14 +495,21 @@ docs/              why things are the way they are
 | Document | What it answers |
 |---|---|
 | [`docs/product-spec.md`](docs/product-spec.md) | What Lemma is for, and what it refuses to be |
-| [`docs/learning-model.md`](docs/learning-model.md) | Ability, mastery levels, review scheduling, errors, the daily plan |
-| [`docs/content-model.md`](docs/content-model.md) | Concepts, generators, answer kinds, quality gates, how to add content |
-| [`docs/architecture.md`](docs/architecture.md) | Packages, data, security, the tutor, deployment, chart rules |
+| [`docs/learning-model.md`](docs/learning-model.md) | Ability, mastery levels, review scheduling, errors, the daily plan; choosing the next skill, the placement test, path states, readiness |
+| [`docs/content-model.md`](docs/content-model.md) | Concepts, generators, answer kinds, goals and examination data, quality gates, how to add content |
+| [`docs/architecture.md`](docs/architecture.md) | Packages, data, security and who may see whose work, the tutor, deployment, chart rules |
+| [`docs/adaptive-learning-plan.md`](docs/adaptive-learning-plan.md) | The plan the entrance-examination and teaching work followed, the sources it used, and what was built |
+| [`docs/cermat-coverage.md`](docs/cermat-coverage.md) | Generated: what each examination asks for, what Lemma covers, and what it does not |
 | [`docs/research.md`](docs/research.md) | Sources: learning science, FIT VUT, forge APIs — with dates |
 | [`docs/roadmap.md`](docs/roadmap.md) | Phases, content plan, and the honest current state |
 | [`docs/updating-fit-data.md`](docs/updating-fit-data.md) | How to refresh the FIT VUT information each year |
 
-## Two things to keep in mind
+## Three things to keep in mind
+
+**The entrance-examination data is a reading of official sources, with a date.** The
+specification is paraphrased item by item and linked; the weight of a skill comes from
+Lemma's own classification of past tasks; the facts about the examination were read on
+9 October 2026. See [Entrance examinations](#entrance-examinations) for the limits.
 
 **The syllabus is a transcription.** The seventeen chapters are the ones in the school's
 thematic plan for 2026/2027 as typed in by the learner; the original document is not part

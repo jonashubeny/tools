@@ -16,7 +16,7 @@ import { type Ctx, HttpError, badRequest, getSettings, newId, notFound } from '.
 import { type ProblemRow } from '../practice';
 import { DEFAULT_CLAUDE_MODEL, runClaude } from './anthropic';
 import { runLocal } from './local';
-import { STABLE_INSTRUCTIONS, buildContext, titleFrom } from './prompt';
+import { buildContext, instructionsFor, titleFrom } from './prompt';
 import { type Provider, type TutorErrorCode, type TutorTurn, TutorError } from './types';
 
 /**
@@ -158,11 +158,39 @@ export function turnsFrom(messages: readonly { role: 'user' | 'assistant'; conte
 const examRunning = (ctx: Ctx): boolean =>
   ctx.db.prepare('SELECT 1 FROM exams WHERE finished_at IS NULL AND deadline_at > ?').get(ctx.now()) !== undefined;
 
+/** A placement test counts as under way for this long after its latest problem was issued. */
+const PLACEMENT_ACTIVE_MS = 45 * 60_000;
+
+/**
+ * Is a placement test being taken right now? It measures what the learner can do alone,
+ * like an exam. One that was abandoned stops counting after a while, so that it cannot
+ * keep the tutor away for good.
+ */
+const placementRunning = (ctx: Ctx): boolean =>
+  ctx.db
+    .prepare(
+      `SELECT 1 FROM problems p JOIN runs r ON r.id = p.run_id
+       WHERE r.context = 'diagnostic' AND r.finished_at IS NULL AND p.issued_at > ? LIMIT 1`,
+    )
+    .get(ctx.now() - PLACEMENT_ACTIVE_MS) !== undefined;
+
+/** A problem of a placement test that is not over: nothing about it may be discussed yet. */
+const sealedProblem = (ctx: Ctx, problemId: string | null): boolean =>
+  problemId !== null &&
+  ctx.db
+    .prepare(
+      `SELECT 1 FROM problems p JOIN runs r ON r.id = p.run_id
+       WHERE p.id = ? AND p.context = 'diagnostic' AND r.finished_at IS NULL`,
+    )
+    .get(problemId) !== undefined;
+
 export interface TutorRouteDeps {
   /** The data of whoever is asking: threads and problems are that learner's own. */
   ctxOf: (c: Context) => Ctx;
   /** Whether the asking account may talk to the model, which runs on the instance's key. */
   allowed: (c: Context) => boolean;
+  /** Whether the one asking is the owner of the instance, whom the instructions describe. */
+  owner?: (c: Context) => boolean;
   body: (c: Context) => Promise<Record<string, unknown>>;
   /** Replaces the configured AI provider; used by tests. */
   provider?: Provider;
@@ -219,6 +247,12 @@ export function registerTutorRoutes(app: Hono, deps: TutorRouteDeps): void {
     // A mock exam measures what he can do alone; the tutor waits until it is over.
     if (examRunning(ctx))
       throw new HttpError(409, 'exam_running', 'the tutor is unavailable while a mock exam is running');
+    // So does a placement test — and its problems stay closed to discussion until it is finished.
+    const about = typeof request.problemId === 'string' ? request.problemId : null;
+    const threadProblem =
+      typeof request.threadId === 'string' ? (getThread(ctx, request.threadId)?.problem_id ?? null) : about;
+    if (placementRunning(ctx) || sealedProblem(ctx, threadProblem))
+      throw new HttpError(409, 'placement_running', 'the tutor is unavailable while a placement test is running');
     const answering = active.get(ctx.db) ?? 0;
     if (answering >= MAX_CONCURRENT) throw new HttpError(429, 'busy', 'the tutor is already answering');
 
@@ -261,7 +295,9 @@ export function registerTutorRoutes(app: Hono, deps: TutorRouteDeps): void {
       ? ((ctx.db.prepare('SELECT * FROM problems WHERE id = ?').get(thread.problem_id) as ProblemRow | undefined) ??
         null)
       : null;
-    const locale = getSettings(ctx).locale;
+    const settings = getSettings(ctx);
+    const locale = settings.locale;
+    const owner = deps.owner ? deps.owner(c) : true;
     addMessage(ctx, threadId, 'user', message);
 
     // Everything the model is told is fixed here, before the first round.
@@ -272,6 +308,7 @@ export function registerTutorRoutes(app: Hono, deps: TutorRouteDeps): void {
       conceptId: thread.concept,
       problem,
       toolsAvailable: status.provider === 'anthropic' || provider !== undefined,
+      owner,
     });
 
     active.set(ctx.db, answering + 1);
@@ -307,7 +344,7 @@ export function registerTutorRoutes(app: Hono, deps: TutorRouteDeps): void {
       try {
         const result = await run({
           config,
-          instructions: STABLE_INSTRUCTIONS,
+          instructions: instructionsFor({ owner, goal: settings.goal }),
           context,
           turns,
           tools: { ctx, locale, problem },

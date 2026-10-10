@@ -123,7 +123,7 @@ function School({
           )}
         >
           {t(
-            'Názvy a pořadí kapitol odpovídají tomu, co jsi zadal. Lemma do nich nic nepřidává; až bude k dispozici oficiální dokument, je třeba je s ním porovnat.',
+            'Názvy a pořadí kapitol odpovídají tomu, co bylo zadáno při zakládání projektu. Lemma do nich nic nepřidává; až bude k dispozici oficiální dokument, je třeba je s ním porovnat.',
             'Chapter names and order match what you supplied. Lemma adds nothing to them; once the official document is available they should be checked against it.',
           )}
         </Notice>

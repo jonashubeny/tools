@@ -1,14 +1,26 @@
 import {
   type Area,
+  type AssignmentKind,
   type BlockKind,
+  type DiagnosticStage,
+  type DiagnosticVerdict,
   type ErrorFamily,
   type ErrorType,
+  type EstimateConfidence,
   type GateStatus,
   type LabTool,
   type MasteryLevel,
+  type PathReason,
+  type PathState,
   type PlanBlockDto,
   type PracticeContext,
   type ProblemKind,
+  type ProblemWhyDto,
+  type Purpose,
+  type ReadinessVerdict,
+  type RunKind,
+  type SkillRole,
+  type SlotFormat,
   type Track,
   type TutorMode,
   ERROR_INFO,
@@ -30,9 +42,9 @@ export const LEVEL_NAMES: Record<MasteryLevel, L> = {
 /** What each level means, in evidence terms. Shown wherever a level is explained. */
 export const LEVEL_MEANING: Record<MasteryLevel, L> = {
   0: L('Zatím bez jakéhokoli důkazu.', 'No evidence yet.'),
-  1: L('Viděl jsi výklad nebo zkusil první úlohu.', 'You have seen the lesson or tried a first problem.'),
+  1: L('Máš za sebou výklad nebo první úlohu.', 'You have seen the lesson or tried a first problem.'),
   2: L(
-    'Několik úloh za sebou; zatím to nic neříká o tom, jestli to umíš sám.',
+    'Několik úloh za sebou; zatím to nic neříká o tom, jestli to umíš bez pomoci.',
     'A few problems done; it says nothing yet about doing it alone.',
   ),
   3: L(
@@ -50,6 +62,8 @@ export const LEVEL_MEANING: Record<MasteryLevel, L> = {
 };
 
 export const AREA_NAMES: Record<Area, L> = {
+  numbers: L('Čísla a počítání', 'Numbers and arithmetic'),
+  data: L('Data a závislosti', 'Data and relationships'),
   algebra: L('Algebra', 'Algebra'),
   functions: L('Funkce', 'Functions'),
   explog: L('Exponenciály a logaritmy', 'Exponentials and logarithms'),
@@ -66,6 +80,7 @@ export const TRACK_NAMES: Record<Track, L> = {
   foundation: L('Základy z dřívějška', 'Earlier foundations'),
   reasoning: L('Rozšíření: uvažování', 'Enrichment: reasoning'),
   vut: L('Rozšíření: směr FIT', 'Enrichment: towards FIT'),
+  basic: L('Učivo základní školy', 'Lower-secondary curriculum'),
 };
 
 export const TRACK_NOTES: Record<Track, L> = {
@@ -78,6 +93,10 @@ export const TRACK_NOTES: Record<Track, L> = {
   vut: L(
     'Není ve školních osnovách. Doporučení Lemmy s ohledem na FIT.',
     'Not on the school syllabus. Lemma’s recommendation with FIT in mind.',
+  ),
+  basic: L(
+    'Z látky, ze které vychází jednotná přijímací zkouška.',
+    'From the material the unified entrance examination draws on.',
   ),
 };
 
@@ -103,6 +122,13 @@ export const CONTEXT_NAMES: Record<PracticeContext, L> = {
   drill: L('Cílený trénink', 'Targeted drill'),
   challenge: L('Výzva', 'Challenge'),
   exam: L('Zkouška nanečisto', 'Mock exam'),
+  diagnostic: L('Rozřazovací test', 'Placement test'),
+};
+
+/** A run is one context throughout, or a session that chooses as it goes. */
+export const RUN_NAMES: Record<RunKind, L> = {
+  ...CONTEXT_NAMES,
+  adaptive: L('Adaptivní procvičování', 'Adaptive practice'),
 };
 
 export const BLOCK_NAMES: Record<BlockKind, L> = {
@@ -114,7 +140,210 @@ export const BLOCK_NAMES: Record<BlockKind, L> = {
   drill: L('Trénink proti chybám', 'Error drill'),
   mock: L('Test nanečisto', 'Mock test'),
   experiment: L('Experiment', 'Experiment'),
+  diagnostic: L('Rozřazovací test', 'Placement test'),
+  adaptive: L('Adaptivní procvičování', 'Adaptive practice'),
+  assigned: L('Zadaná práce', 'Assigned work'),
 };
+
+// ------------------------------------------------------------- goals, paths and reasons
+
+/** Where a skill stands on the learner's path. Always shown as a word, never as colour alone. */
+export const PATH_NAMES: Record<PathState, L> = {
+  'not-started': L('nezačato', 'not started'),
+  diagnosed: L('rozřazeno', 'diagnosed'),
+  learning: L('učení', 'learning'),
+  practising: L('procvičování', 'practising'),
+  consolidating: L('upevňování', 'consolidating'),
+  mastered: L('zvládnuto', 'mastered'),
+  'needs-review': L('k zopakování', 'needs review'),
+};
+
+/** The rule that put a skill in its state, in a sentence. */
+export const PATH_REASONS: Record<PathReason, L> = {
+  'no-evidence': L('Zatím bez jediné úlohy.', 'No problem tried yet.'),
+  'placed-high': L(
+    'Podle rozřazovacího testu to nejspíš umíš. Vlastní úlohy to ještě nepotvrdily.',
+    'The placement test suggests you can do this. No problems of your own have confirmed it yet.',
+  ),
+  'placed-low': L('Rozřazovací test tu ukázal mezeru.', 'The placement test showed a gap here.'),
+  'placed-unclear': L('Rozřazovací test tu nedal jasnou odpověď.', 'The placement test gave no clear answer here.'),
+  introduced: L('První kroky: výklad nebo pár úloh.', 'First steps: the lesson or a few problems.'),
+  familiar: L(
+    'Typové úlohy řešíš bez pomoci, když víš, o jaké téma jde.',
+    'You solve the standard problems unaided when you know what the topic is.',
+  ),
+  proficient: L(
+    'Poznáš typ úlohy i ve směsi a vydrželo to přes pauzu. Chybí nejtěžší úlohy a delší odstup.',
+    'You recognise the problem type in a mix and it has survived a gap. The hardest problems and a longer gap are missing.',
+  ),
+  'all-gates': L('Všechny důkazy jsou splněné.', 'Every piece of evidence is there.'),
+  'review-due': L('Nastal čas si to připomenout.', 'It is time to recall it.'),
+  fading: L('Podle odhadu se to začíná vytrácet z paměti.', 'By the estimate it is starting to fade from memory.'),
+  'review-failed': L('Poslední opakování se nepovedlo.', 'The last review did not go well.'),
+};
+
+export const PURPOSE_NAMES: Record<Purpose, L> = {
+  new: L('nová látka', 'new material'),
+  repair: L('doplnění základu', 'repairing a gap'),
+  consolidate: L('upevnění', 'consolidation'),
+  review: L('opakování', 'review'),
+  exam: L('jako u zkoušky', 'exam-style'),
+  stretch: L('těžší výzva', 'stretch'),
+  assigned: L('zadaná práce', 'assigned'),
+  confidence: L('na rozjezd', 'a sure one'),
+};
+
+export const ROLE_NAMES: Record<SkillRole, L> = {
+  tested: L('ve zkoušce', 'in the examination'),
+  prerequisite: L('předpoklad', 'prerequisite'),
+  enrichment: L('nad rámec zkoušky', 'beyond the examination'),
+};
+
+export const ROLE_NOTES: Record<SkillRole, L> = {
+  tested: L(
+    'V testech, které byly přečteny, se objevila úloha na tuhle dovednost, nebo ji uvádí specifikace pro tuto zkoušku.',
+    'A task on this skill appeared in the tests that were read, or the specification for this examination lists it.',
+  ),
+  prerequisite: L(
+    'Sama se takto nezkouší, ale stojí na ní to, co se zkouší.',
+    'Not asked in this form itself, but what is asked stands on it.',
+  ),
+  enrichment: L(
+    'Patří až k vyššímu ročníku. Nabídne se, až bude všechno zkoušené aspoň „známé“.',
+    'It belongs to a later grade. It is offered once everything examined is at least “familiar”.',
+  ),
+};
+
+export const CONFIDENCE_NAMES: Record<EstimateConfidence, L> = {
+  none: L('bez dat', 'no data'),
+  low: L('málo dat', 'little data'),
+  medium: L('středně jisté', 'fairly sure'),
+  high: L('dobře podložené', 'well supported'),
+};
+
+export const VERDICT_NAMES: Record<DiagnosticVerdict, L> = {
+  strong: L('jisté', 'strong'),
+  sound: L('v pořádku', 'sound'),
+  shaky: L('nejisté', 'shaky'),
+  gap: L('mezera', 'gap'),
+  untested: L('nezkoušeno', 'not asked'),
+};
+
+export const VERDICT_NOTES: Record<DiagnosticVerdict, L> = {
+  strong: L('Vyřešena běžná i těžší úloha.', 'Both the standard and the harder problem were solved.'),
+  sound: L(
+    'Běžná úloha vyřešena; těžší ne, nebo na ni nedošlo.',
+    'The standard problem was solved; the harder one was not, or was not asked.',
+  ),
+  shaky: L('Běžná úloha ne, lehčí ano.', 'The standard problem was missed, the easier one solved.'),
+  gap: L('Nepovedla se běžná ani lehčí úloha.', 'Neither the standard nor the easier problem was solved.'),
+  untested: L('Na tuhle dovednost test nedošel.', 'The test did not get to this skill.'),
+};
+
+export const STAGE_NAMES: Record<DiagnosticStage, L> = {
+  anchor: L('běžná úloha', 'standard problem'),
+  'second-chance': L('druhá, lehčí', 'second, easier'),
+  prerequisite: L('o krok níž', 'one step down'),
+  harder: L('těžší', 'harder'),
+};
+
+export const READINESS_NAMES: Record<ReadinessVerdict, L> = {
+  'no-data': L('Zatím není z čeho soudit', 'Nothing to judge from yet'),
+  building: L('Staví se základ', 'The base is being built'),
+  practising: L('Procvičování napříč látkou', 'Practising across the curriculum'),
+  'test-ready': L('Je čas na test nanečisto', 'Time for a timed practice test'),
+};
+
+export const READINESS_NOTES: Record<ReadinessVerdict, L> = {
+  'no-data': L(
+    'Po rozřazovacím testu nebo prvních úlohách tu bude víc.',
+    'There will be more here after the placement test or the first problems.',
+  ),
+  building: L(
+    'Procvičena je zatím menší část toho, co zkouška obsahuje. Nejdřív pokrýt látku, test na čas až potom.',
+    'A smaller part of what the examination contains has been practised so far. Cover the material first; a timed test comes later.',
+  ),
+  practising: L(
+    'Větší část látky už je rozpracovaná. Test nanečisto dává smysl, až bude většina aspoň „známá“.',
+    'Most of the material is under way. A timed practice test makes sense once most of it is at least “familiar”.',
+  ),
+  'test-ready': L(
+    'Většina látky je procvičená a aspoň „známá“. Test na čas teď ukáže, jak to drží pohromadě.',
+    'Most of the material has been practised and is at least “familiar”. A timed test now shows how it holds together.',
+  ),
+};
+
+export const ASSIGNMENT_NAMES: Record<AssignmentKind, L> = {
+  practice: L('Procvičování', 'Practice'),
+  review: L('Opakování', 'Review'),
+  remediation: L('Doplnění základu', 'Catching up'),
+  lesson: L('Výklad a řešený příklad', 'Lesson and worked example'),
+  test: L('Test nanečisto', 'Timed practice test'),
+};
+
+export const FORMAT_NAMES: Record<SlotFormat, L> = {
+  open: L('otevřená', 'open'),
+  choice: L('výběr z pěti', 'one of five'),
+  truefalse: L('ano / ne', 'true / false'),
+  matching: L('přiřazení', 'matching'),
+};
+
+/** Why a problem of an adaptive session was chosen, as one sentence. */
+export function whyText(why: ProblemWhyDto, t: Translate): string {
+  if (why.purpose === 'confidence')
+    return t('Po dvou nezdarech něco, co obvykle vyjde.', 'After two misses, something that usually goes well.');
+  if (why.purpose === 'assigned') return t('Je to součást zadané práce.', 'It is part of assigned work.');
+  switch (why.because) {
+    case 'unlock':
+      return why.forSkill
+        ? t(
+            `Stojí na tom „${t(why.forSkill.title)}“ — nejdřív základ.`,
+            `“${t(why.forSkill.title)}” stands on this — the foundation first.`,
+          )
+        : t('Stojí na tom další látka — nejdřív základ.', 'More material stands on this — the foundation first.');
+    case 'review':
+      return t('Je čas si to připomenout, než se to vytratí.', 'Time to recall it before it fades.');
+    case 'errors':
+      return t(
+        'V posledních úlohách tu byly chyby v postupu nebo v porozumění.',
+        'Recent attempts here had errors of procedure or understanding.',
+      );
+    case 'school':
+      return t('Probíráte to teď ve škole.', 'Your class is on it now.');
+    case 'info':
+      return t('O téhle dovednosti toho zatím aplikace ví málo.', 'The app knows little about this skill so far.');
+    case 'assigned':
+      return t('Poznamenáno při doučování: vrátit se k tomu.', 'Noted in a tutoring session: come back to this.');
+    default:
+      break;
+  }
+  switch (why.purpose) {
+    case 'new':
+      return t(
+        'Další nová látka, která má u zkoušky váhu.',
+        'The next new material that carries weight in the examination.',
+      );
+    case 'repair':
+      return t(
+        'Tady je mezera, která u zkoušky stojí body.',
+        'There is a gap here that costs points in the examination.',
+      );
+    case 'exam':
+      return t(
+        'Tohle už znáš — teď bez nápovědy, o jaké téma jde.',
+        'You know this — now without being told what the topic is.',
+      );
+    case 'stretch':
+      return t('Tohle ti jde; těžší úloha řekne víc.', 'This goes well for you; a harder problem tells more.');
+    case 'review':
+      return t('Je čas si to připomenout, než se to vytratí.', 'Time to recall it before it fades.');
+    default:
+      return t(
+        'Rozpracovaná dovednost, která má u zkoušky váhu.',
+        'A skill under way that carries weight in the examination.',
+      );
+  }
+}
 
 export const LENS_NAMES: Record<'intuition' | 'formal' | 'visual' | 'algebraic' | 'it', L> = {
   intuition: L('Intuice', 'Intuition'),
@@ -263,6 +492,14 @@ export function gateText(gate: GateStatus, level: MasteryLevel, t: Translate): {
         value: gate.done ? t('ano', 'yes') : t('zatím ne', 'not yet'),
       };
     }
+    case 'variety':
+      return {
+        label: t(
+          'Bez pomoci v různých typech úloh, ne jen v jednom',
+          'Unaided in different kinds of problem, not just one',
+        ),
+        value: count,
+      };
     case 'clean':
       return {
         label: t('Poslední úlohy bez koncepční chyby', 'Recent problems free of conceptual errors'),
@@ -341,6 +578,33 @@ export function reasonText(block: PlanBlockDto, t: Translate, titleOf: (id: stri
       return t(
         'Volitelně: podívej se, jak se to chová, když hýbeš parametry.',
         'Optional: see how it behaves when you move the parameters.',
+      );
+    case 'diagnostic-first':
+      return t(
+        'Krátký test napříč látkou ukáže, odkud začít — bez něj by všechno začínalo úplně od začátku. Nic se neznámkuje a „tohle neumím“ je v pořádku.',
+        'A short test across the curriculum shows where to start — without it everything would begin at the very beginning. Nothing is graded, and “I do not know this” is fine.',
+      );
+    case 'adaptive-mix': {
+      const picks = [1, 2, 3]
+        .filter((i) => typeof d[`s${i}`] === 'string')
+        .map((i) => {
+          const purpose = d[`p${i}`];
+          const name =
+            typeof purpose === 'string' && purpose in PURPOSE_NAMES ? t(PURPOSE_NAMES[purpose as Purpose]) : '';
+          return name ? `${s(`s${i}`)} (${name})` : s(`s${i}`);
+        });
+      const due = n('due') > 0 ? t(` Na opakování čeká ${n('due')}.`, ` ${n('due')} due for review.`) : '';
+      return t(
+        `Úlohy se vybírají jedna po druhé podle toho, co teď nejvíc pomůže. Právě je to hlavně: ${picks.join(', ')}.${due}`,
+        `Problems are chosen one at a time by what helps most right now. At the moment that is mainly: ${picks.join(', ')}.${due}`,
+      );
+    }
+    case 'assigned-by-teacher':
+      return t('Tohle ti bylo zadáno.', 'This was set for you.');
+    case 'mock-ready':
+      return t(
+        'Většina látky je procvičená. Test na čas ukáže, jak to drží pohromadě — a co ještě ne.',
+        'Most of the material has been practised. A timed test shows how it holds together — and what does not yet.',
       );
   }
 }

@@ -1,24 +1,29 @@
 import { type ConceptDetailDto, type StartRunResponse, ERROR_INFO } from '@lemma/core';
-import { ArrowLeft, BookOpen, ExternalLink, FlaskConical, MessageSquare, Play, Zap } from 'lucide-react';
+import { ArrowLeft, BookOpen, ExternalLink, FlaskConical, MessageSquare, Play, Ruler, Zap } from 'lucide-react';
 import { useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { api } from '../app/api';
-import { Gates } from '../app/components';
+import { Gates, PathBadge } from '../app/components';
 import { useT } from '../app/i18n';
 import {
   AREA_NAMES,
+  CONFIDENCE_NAMES,
   KIND_NAMES,
   LAB_NAMES,
   LENS_NAMES,
   LEVEL_MEANING,
   LEVEL_NAMES,
+  PATH_REASONS,
+  ROLE_NAMES,
+  ROLE_NOTES,
   TRACK_NAMES,
   TRACK_NOTES,
 } from '../app/labels';
-import { useConcept } from '../app/queries';
+import { useConcept, useExample, useRefresh } from '../app/queries';
+import { Figure } from '../figure/Figure';
 import { cn } from '../lib/cn';
-import { formatDateTime, inDays, pct } from '../lib/format';
-import { RichText } from '../lib/Math';
+import { formatDateTime, inDays, pct, plural } from '../lib/format';
+import { RichText, Tex } from '../lib/Math';
 import { useTutor } from '../tutor/context';
 import { Badge, Button, Card, ErrorNote, LinkButton, Loading, Meter, Notice, SectionLabel, StatTile } from '../ui';
 import { BarList, LevelBar } from '../viz/charts';
@@ -44,6 +49,11 @@ function ConceptBody({ data }: { data: ConceptDetailDto }) {
   const [error, setError] = useState<unknown>(null);
   const available = LENSES.filter((lens) => data.why[lens] !== undefined);
   const [lens, setLens] = useState<Lens>(available[0] ?? 'intuition');
+  const [params] = useSearchParams();
+  // A skill without an authored lesson is introduced by a solved example of its own problems.
+  const canShowExample = !data.lesson && data.hasProblems;
+  const [exampleOpen, setExampleOpen] = useState(canShowExample && params.get('example') === '1');
+  const basic = data.track === 'basic';
 
   const start = async (key: string, body: Record<string, unknown>): Promise<void> => {
     setBusy(key);
@@ -68,9 +78,9 @@ function ConceptBody({ data }: { data: ConceptDetailDto }) {
 
   return (
     <div>
-      <Link to="/learn" className="mb-3 inline-flex items-center gap-1 text-sm text-ink-2">
+      <Link to={basic ? '/map' : '/learn'} className="mb-3 inline-flex items-center gap-1 text-sm text-ink-2">
         <ArrowLeft size={14} aria-hidden />
-        {t('Osnovy', 'Syllabus')}
+        {basic ? t('Mapa učiva', 'Curriculum map') : t('Osnovy', 'Syllabus')}
       </Link>
 
       <header className="mb-6">
@@ -84,6 +94,17 @@ function ConceptBody({ data }: { data: ConceptDetailDto }) {
             </Badge>
           )}
           <Badge>{t(AREA_NAMES[data.area])}</Badge>
+          {data.role && (
+            <Badge tone={data.role === 'tested' ? 'accent' : 'outline'} title={t(ROLE_NOTES[data.role])}>
+              {t(ROLE_NAMES[data.role])}
+              {data.role === 'tested' && data.weight > 0 && ` · ${pct(data.weight, t.locale, 1)}`}
+            </Badge>
+          )}
+          {data.paperOnly && (
+            <Badge tone="outline">
+              <Ruler size={11} aria-hidden /> {t('na papíře', 'on paper')}
+            </Badge>
+          )}
           {data.annualReview && (
             <Badge
               title={t(
@@ -112,7 +133,9 @@ function ConceptBody({ data }: { data: ConceptDetailDto }) {
         <p className="mt-1.5 max-w-3xl text-ink-2">
           <RichText text={t(data.summary)} inlineOnly />
         </p>
-        {data.track !== 'school' && <p className="mt-1 text-[13px] text-ink-3">{t(TRACK_NOTES[data.track])}</p>}
+        {data.track !== 'school' && !basic && (
+          <p className="mt-1 text-[13px] text-ink-3">{t(TRACK_NOTES[data.track])}</p>
+        )}
 
         <div className="mt-4 flex flex-wrap gap-2">
           {lessonLabel && (
@@ -124,8 +147,19 @@ function ConceptBody({ data }: { data: ConceptDetailDto }) {
               )}
             </LinkButton>
           )}
+          {canShowExample && (
+            <Button
+              variant={data.attempts === 0 ? 'primary' : 'secondary'}
+              onClick={() => setExampleOpen((open) => !open)}
+            >
+              <BookOpen size={14} />
+              {t('Řešený příklad', 'Worked example')}
+            </Button>
+          )}
           <Button
-            variant={data.lesson && !data.lesson.done ? 'secondary' : 'primary'}
+            variant={
+              (data.lesson && !data.lesson.done) || (canShowExample && data.attempts === 0) ? 'secondary' : 'primary'
+            }
             disabled={!data.hasProblems}
             busy={busy === 'practice'}
             onClick={() => void start('practice', { context: 'blocked', concept: data.id, count: 6 })}
@@ -155,13 +189,22 @@ function ConceptBody({ data }: { data: ConceptDetailDto }) {
             </Button>
           )}
         </div>
-        {!data.hasProblems && (
-          <Notice tone="info" className="mt-4">
+        {data.paperOnly ? (
+          <Notice tone="info" className="mt-4" title={t('Tohle se procvičuje na papíře', 'This is practised on paper')}>
             {t(
-              'K tomuhle pojmu zatím nejsou úlohy. Výklad a souvislosti níž už platí; procvičování přibude.',
-              'There are no problems for this concept yet. The explanation and connections below already hold; practice will follow.',
+              'Konstrukce se rýsují pravítkem a kružítkem a hodnotí se podle postupu i výsledku. To aplikace zadat ani poctivě zkontrolovat neumí, takže tu k nim úlohy nejsou a nezapočítávají se do žádného z údajů o připravenosti. Zadání na procvičení jsou na oficiálním webu zkoušky.',
+              'Constructions are drawn with ruler and compasses and marked on the working as well as the result. The app can neither set nor honestly check that, so there are no problems for them here and they count towards none of the readiness figures. Papers to practise on are on the examination’s official site.',
             )}
           </Notice>
+        ) : (
+          !data.hasProblems && (
+            <Notice tone="info" className="mt-4">
+              {t(
+                'K tomuhle pojmu zatím nejsou úlohy. Výklad a souvislosti níž už platí; procvičování přibude.',
+                'There are no problems for this concept yet. The explanation and connections below already hold; practice will follow.',
+              )}
+            </Notice>
+          )
         )}
         {data.weakPrereq && (
           <Notice
@@ -193,6 +236,7 @@ function ConceptBody({ data }: { data: ConceptDetailDto }) {
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
         <div className="min-w-0 space-y-5">
+          {exampleOpen && <WorkedExample id={data.id} />}
           {available.length > 0 && (
             <Card className="p-5">
               <SectionLabel>{t('Proč to funguje', 'Why it works')}</SectionLabel>
@@ -243,6 +287,19 @@ function ConceptBody({ data }: { data: ConceptDetailDto }) {
             </div>
             <p className="mt-1.5 text-sm text-ink-2">{t(LEVEL_MEANING[data.level])}</p>
             <Meter value={data.progress} className="mt-3" label={t('Celkový postup', 'Overall progress')} />
+            <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-ink-2">
+              <PathBadge state={data.path} className="font-medium text-ink" />
+              <span>{t(PATH_REASONS[data.pathReason])}</span>
+            </div>
+            <div className="mt-1 text-xs text-ink-3">
+              {t('Jak moc se dá odhadu věřit', 'How far the estimate can be trusted')}:{' '}
+              {t(CONFIDENCE_NAMES[data.confidence])}
+              {data.confidence === 'low' &&
+                t(
+                  ' — málo úloh, jediný den nebo jediný typ úlohy.',
+                  ' — few problems, a single day, or a single kind of problem.',
+                )}
+            </div>
 
             {data.next && (
               <div className="mt-4">
@@ -282,8 +339,25 @@ function ConceptBody({ data }: { data: ConceptDetailDto }) {
               </div>
             )}
 
-            {data.attempts > 0 && (
+            {data.stats.attempts > 0 && (
               <p className="mt-4 text-[13px] text-ink-3">
+                {t('Záznam', 'On record')}: {data.record.firstTry}× {t('napoprvé', 'at the first try')} ·{' '}
+                {data.record.hinted}× {t('s nápovědou', 'with a hint')} ·{' '}
+                {plural(data.record.days, t.locale, ['den', 'dny', 'dní'], ['day', 'days'])} ·{' '}
+                {t('typy úloh', 'kinds of problem')} {data.record.families}/{data.record.familyCap}
+                {data.record.guessed > 0 &&
+                  ` · ${data.record.guessed}× ${t('tip nebo ano/ne', 'a guess or true/false')}`}
+                {data.record.timed.attempts > 0 &&
+                  ` · ${t('na čas', 'timed')} ${data.record.timed.solved}/${data.record.timed.attempts}`}
+                {data.record.reviews.passed + data.record.reviews.failed > 0 &&
+                  ` · ${t('opakování', 'reviews')} ${data.record.reviews.passed}/${data.record.reviews.passed + data.record.reviews.failed}`}
+                {data.record.diagnosed > 0 &&
+                  ` · ${t('z toho v rozřazení', 'of which in placement')} ${data.record.diagnosed}`}
+              </p>
+            )}
+
+            {data.attempts > 0 && (
+              <p className="mt-2 text-[13px] text-ink-3">
                 {data.due
                   ? t(
                       'Je čas si to připomenout — paměť na to začíná slábnout.',
@@ -352,6 +426,59 @@ function ConceptBody({ data }: { data: ConceptDetailDto }) {
         </div>
 
         <div className="min-w-0 space-y-5">
+          {data.role && (
+            <Card className="p-5">
+              <SectionLabel>{t('Ve zkoušce', 'In the examination')}</SectionLabel>
+              <p className="mt-2 text-sm text-ink-2">{t(ROLE_NOTES[data.role])}</p>
+              {data.evidence && (
+                <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+                  <div>
+                    <dt className="mono-label">{t('Podíl bodů', 'Share of points')}</dt>
+                    <dd className="mt-1 text-xl font-semibold">
+                      {data.role === 'tested' ? pct(data.weight, t.locale, 1) : '—'}
+                    </dd>
+                    <dd className="text-xs text-ink-3">
+                      {t(
+                        `v ${data.evidence.papersRead} přečtených testech`,
+                        `in the ${data.evidence.papersRead} tests read`,
+                      )}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="mono-label">{t('Úlohy v minulých testech', 'Tasks in past tests')}</dt>
+                    <dd className="mt-1 text-xl font-semibold">{data.evidence.read}</dd>
+                    <dd className="text-xs text-ink-3">
+                      {t(
+                        `čtením; dalších ${data.evidence.rules} podle klíčových slov`,
+                        `by reading; ${data.evidence.rules} more by keyword rules`,
+                      )}
+                    </dd>
+                  </div>
+                </dl>
+              )}
+              {data.spec.length > 0 && (
+                <details className="mt-3 text-[13px] text-ink-2">
+                  <summary className="hover:text-ink">
+                    {t('Co o tom říká specifikace požadavků', 'What the specification of requirements says')}
+                  </summary>
+                  <ul className="mt-2 space-y-1">
+                    {data.spec.map((item) => (
+                      <li key={item.id} className="flex gap-2">
+                        <span className="w-14 shrink-0 font-mono text-xs text-ink-3">{item.id}</span>
+                        <span>{t(item.text)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="mt-2 text-xs text-ink-3">
+                    {t(
+                      'Znění je volný přepis; platí text oficiálního dokumentu.',
+                      'The wording is a paraphrase; the official document’s text is what counts.',
+                    )}
+                  </p>
+                </details>
+              )}
+            </Card>
+          )}
           {(data.prereqDetails.length > 0 || data.unlocks.length > 0) && (
             <Card className="p-5">
               {data.prereqDetails.length > 0 && (
@@ -391,8 +518,10 @@ function ConceptBody({ data }: { data: ConceptDetailDto }) {
                   </ul>
                 </>
               )}
-              <Link to="/tree" className="mt-3 inline-block text-[13px]">
-                {t('Zobrazit ve stromu dovedností', 'Show in the skill tree')}
+              <Link to={basic ? '/map' : '/tree'} className="mt-3 inline-block text-[13px]">
+                {basic
+                  ? t('Zobrazit v mapě učiva', 'Show in the curriculum map')
+                  : t('Zobrazit ve stromu dovedností', 'Show in the skill tree')}
               </Link>
             </Card>
           )}
@@ -461,7 +590,7 @@ function Calibration({ data }: { data: ConceptDetailDto }) {
   if (total < 4) return null;
   return (
     <p className="mt-4 border-t border-border pt-3 text-[13px] text-ink-2">
-      {t('Když sis byl jistý, měl jsi pravdu', 'When you were sure, you were right')}{' '}
+      {t('Odpověď „jistě“ byla správně', 'A “sure” answer was right')}{' '}
       <b className="text-ink">
         {c.sureRight}× {t('z', 'of')} {c.sureRight + c.sureWrong}
       </b>
@@ -471,5 +600,70 @@ function Calibration({ data }: { data: ConceptDetailDto }) {
           `. “Sure, yet wrong” (${c.sureWrong}×) is usually a slip — that is where checking helps.`,
         )}
     </p>
+  );
+}
+
+/**
+ * One of the skill's own problems, solved step by step. Reading it is not an attempt and
+ * proves nothing; it is what a lesson would open with.
+ */
+function WorkedExample({ id }: { id: string }) {
+  const t = useT();
+  const refresh = useRefresh();
+  const [n, setN] = useState(0);
+  const example = useExample(id, n, true);
+  return (
+    <Card className="p-5">
+      <SectionLabel
+        action={
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setN((value) => value + 1);
+              refresh();
+            }}
+          >
+            {t('Jiný příklad', 'Another example')}
+          </Button>
+        }
+      >
+        {t('Řešený příklad', 'Worked example')}
+      </SectionLabel>
+      {example.isPending && <Loading />}
+      {example.isError && <ErrorNote error={example.error} />}
+      {example.data && (
+        <>
+          <div className="mt-3 text-[1.0625rem] leading-relaxed">
+            <RichText text={t(example.data.prompt)} />
+          </div>
+          {example.data.figure && <Figure spec={example.data.figure} className="mt-4" maxWidth={460} />}
+          <ol className="mt-4 space-y-2.5 border-t border-border pt-4">
+            {example.data.solution.map((step, index) => (
+              <li key={index} className="flex gap-3 text-sm">
+                <span className="mt-0.5 w-4 shrink-0 font-mono text-xs text-ink-3">{index + 1}</span>
+                <div className="min-w-0 flex-1">
+                  <RichText text={t(step.text)} />
+                  {step.math !== undefined && (
+                    <Tex tex={typeof step.math === 'string' ? step.math : t(step.math)} display />
+                  )}
+                </div>
+              </li>
+            ))}
+          </ol>
+          {example.data.answerTex[t.locale] !== '' && (
+            <div className="mt-3 text-sm text-ink-2">
+              {t('Výsledek', 'Result')}: <Tex tex={t(example.data.answerTex)} className="text-ink" />
+            </div>
+          )}
+          <p className="mt-3 text-xs text-ink-3">
+            {t(
+              'Přečtení příkladu se nepočítá jako vyřešená úloha. Teď to zkus bez pomoci.',
+              'Reading an example does not count as a solved problem. Now try one unaided.',
+            )}
+          </p>
+        </>
+      )}
+    </Card>
   );
 }

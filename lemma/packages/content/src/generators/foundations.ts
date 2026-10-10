@@ -15,7 +15,7 @@ import {
   setL,
   type Generator,
 } from '@lemma/core';
-import { HINT, distinct, gen, mapL, mc, nz, par, shiftIn, shiftTex, step, tailIn, tailTex } from './helpers';
+import { HINT, distinct, gen, mapL, mc, nz, par, plural, shiftIn, shiftTex, step, tailIn, tailTex } from './helpers';
 
 /** Generators for foundation concepts (track 'foundation'). */
 export const FOUNDATION_GENERATORS: Generator[] = [
@@ -1263,7 +1263,7 @@ export const FOUNDATION_GENERATORS: Generator[] = [
           answer: { kind: 'set', values: [`${a - d}`, `${a + d}`], label: 'K =' },
           hints: [
             L(
-              `Představ si číselnou osu. Od čísla $${a}$ jdi $${d}$ kroků — ale kterým směrem?`,
+              `Představ si číselnou osu. Od čísla $${a}$ jdi $${d}$ ${plural(d, 'krok', 'kroky', 'kroků')} — ale kterým směrem?`,
               `Picture the number line. From $${a}$ go $${d}$ steps — but in which direction?`,
             ),
             L('Oběma směry. Řešení jsou dvě.', 'Both directions. There are two solutions.'),

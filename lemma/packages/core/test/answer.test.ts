@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { answerToTex, checkAnswer, interpretAnswer, validateSpec } from '../src/answer/check';
-import { publicAnswerSpec, type AnswerSpec, type Misconception } from '../src/answer/types';
+import { AS_FRACTION, REDUCE_FRACTION } from '../src/answer/messages';
+import { guessChance, publicAnswerSpec, type AnswerSpec, type Misconception } from '../src/answer/types';
 import { L } from '../src/i18n';
 
 const verdict = (spec: AnswerSpec, input: string, misconceptions: Misconception[] = []) =>
@@ -35,6 +36,34 @@ describe('number answers', () => {
     expect(checkAnswer({ kind: 'number', value: '1/3' }, '0.333').verdict).toBe('invalid');
     // …but not when the answer is simply different
     expect(checkAnswer(root, '3,9').verdict).toBe('incorrect');
+  });
+
+  it('asks for lowest terms where reducing is the task, without calling the value wrong', () => {
+    const reduced: AnswerSpec = { kind: 'number', value: '3/4', form: 'reduced' };
+    expect(verdict(reduced, '3/4')).toBe('correct');
+    expect(verdict(reduced, ' 3 / 4 ')).toBe('correct');
+    // The right value in the wrong form is not counted as a wrong answer: it is sent back with the reason.
+    expect(checkAnswer(reduced, '6/8')).toEqual({ verdict: 'invalid', message: REDUCE_FRACTION });
+    expect(checkAnswer(reduced, '75/100')).toEqual({ verdict: 'invalid', message: REDUCE_FRACTION });
+    expect(checkAnswer(reduced, '0,75')).toEqual({ verdict: 'invalid', message: AS_FRACTION });
+    expect(checkAnswer(reduced, '1/2 + 1/4')).toEqual({ verdict: 'invalid', message: AS_FRACTION });
+    // A different value is simply wrong.
+    expect(verdict(reduced, '2/3')).toBe('incorrect');
+    expect(verdict(reduced, '4/3')).toBe('incorrect');
+
+    const negative: AnswerSpec = { kind: 'number', value: '-5/6', form: 'reduced' };
+    expect(verdict(negative, '-5/6')).toBe('correct');
+    expect(verdict(negative, '-10/12')).toBe('invalid');
+    expect(errorOf(negative, '5/6')).toBe('sign');
+    // A whole number is written as one.
+    const whole: AnswerSpec = { kind: 'number', value: '3', form: 'reduced' };
+    expect(verdict(whole, '3')).toBe('correct');
+    expect(verdict(whole, '6/2')).toBe('invalid');
+    expect(verdict(whole, '3/1')).toBe('invalid');
+    // Without the requirement every equivalent form is accepted, as before.
+    expect(verdict({ kind: 'number', value: '3/4' }, '6/8')).toBe('correct');
+    // The interface is told beforehand, so that it can say what is expected.
+    expect(publicAnswerSpec(reduced)).toMatchObject({ kind: 'number', form: 'reduced' });
   });
 
   it('accepts rounded answers when a tolerance is set', () => {
@@ -344,6 +373,40 @@ describe('choice and find-the-mistake answers', () => {
     expect(verdict(spot, '1')).toBe('correct');
     expect(verdict(spot, '2')).toBe('incorrect');
     expect(verdict(spot, '7')).toBe('invalid');
+  });
+});
+
+describe('the chance of guessing right', () => {
+  const options = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({ id: String.fromCharCode(97 + i), text: L('x', 'x') }));
+
+  it('is one in the number of options, and none for a typed answer', () => {
+    expect(guessChance({ kind: 'choice', options: options(5), correct: ['a'] })).toBeCloseTo(0.2, 10);
+    expect(guessChance({ kind: 'choice', options: options(2), correct: ['a'] })).toBe(0.5);
+    expect(guessChance({ kind: 'choice', options: options(6), correct: ['c'] })).toBeCloseTo(1 / 6, 10);
+    // Several boxes to tick: every selection but the empty one could be the answer.
+    expect(guessChance({ kind: 'choice', options: options(3), correct: ['a', 'b'], multi: true })).toBeCloseTo(
+      1 / 7,
+      10,
+    );
+    expect(
+      guessChance({
+        kind: 'spot',
+        lines: [{ tex: 'a' }, { tex: 'b' }, { tex: 'c' }, { tex: 'd' }],
+        wrongLine: 2,
+        errorType: 'sign',
+      }),
+    ).toBe(0.25);
+    for (const spec of [
+      { kind: 'number', value: '3/2' },
+      { kind: 'expr', value: 'x+1', vars: ['x'] },
+      { kind: 'set', values: ['1', '2'] },
+      { kind: 'self', rubric: [], model: L('m', 'm') },
+    ] as AnswerSpec[])
+      expect(guessChance(spec), spec.kind).toBe(0);
+    // Degenerate cases do not divide by zero.
+    expect(guessChance({ kind: 'choice', options: options(1), correct: ['a'] })).toBe(0);
+    expect(guessChance({ kind: 'choice', options: [], correct: [] })).toBe(0);
   });
 });
 

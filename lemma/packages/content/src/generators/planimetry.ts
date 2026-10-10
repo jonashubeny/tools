@@ -1,5 +1,5 @@
 import { L, fMul, fToInput, fToTex, frac, type FigureSpec, type Generator } from '@lemma/core';
-import { gen, mc, step } from './helpers';
+import { gen, mc, plural, step, zPrep } from './helpers';
 import { agree, triangleASA, triangleFigure, triangleSSS } from './triangle-kit';
 import { piIn, piTex } from './trig-kit';
 
@@ -302,7 +302,7 @@ export const PLANIMETRY_GENERATORS: Generator[] = [
           ],
           solution: [
             step(
-              `Úhlopříčky z jednoho vrcholu rozdělí ${n}úhelník na ${n - 2} trojúhelníků:`,
+              `Úhlopříčky z jednoho vrcholu rozdělí ${n}úhelník na ${n - 2} ${plural(n - 2, 'trojúhelník', 'trojúhelníky', 'trojúhelníků')}:`,
               `The diagonals from one vertex split the polygon into ${n - 2} triangles:`,
               `(${n} - 2) \\cdot 180^{\\circ} = ${sum}^{\\circ}`,
             ),
@@ -425,7 +425,7 @@ export const PLANIMETRY_GENERATORS: Generator[] = [
         ],
         solution: [
           step(
-            `Z každého z ${n} vrcholů vede ${n - 3} úhlopříček; každá má dva konce:`,
+            `Z každého ${zPrep(n)} ${n} vrcholů ${plural(n - 3, 'vede', 'vedou', 'vede')} ${n - 3} ${plural(n - 3, 'úhlopříčka', 'úhlopříčky', 'úhlopříček')}; každá má dva konce:`,
             `Each of the ${n} vertices sends out ${n - 3} diagonals; each has two ends:`,
             `\\frac{${n} \\cdot (${n} - 3)}{2} = ${diagonals}`,
           ),

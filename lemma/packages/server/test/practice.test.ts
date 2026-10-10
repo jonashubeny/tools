@@ -232,7 +232,16 @@ describe('runs', () => {
   it('walks through a blocked run and summarises it', async () => {
     const h = harness();
     const first = await start(h, { context: 'blocked', concept: 'quad.graph', count: 5 });
-    await playRun(h, first, (_problem, index) => (index === 1 ? 'wrong-then-right' : index === 3 ? 'wrong' : 'right'));
+    // One problem is failed outright, one is corrected at the second try — which needs a
+    // problem that has a second try: a choice is settled by the first answer.
+    let corrected = -1;
+    await playRun(h, first, (problem, index) => {
+      if (index === 3) return 'wrong';
+      if (corrected >= 0 || problem.triesLeft < 2) return 'right';
+      corrected = index;
+      return 'wrong-then-right';
+    });
+    expect(corrected).toBeGreaterThanOrEqual(0);
     const run = (await h.get<StartRunResponse['run']>(`/api/runs/${first.run.id}`)).body;
     expect(run.finished).toBe(true);
     expect(run.summary).toMatchObject({ problems: 5, solved: 4, unaided: 3 });
@@ -456,7 +465,7 @@ describe('the daily plan and the dashboard', () => {
     expect(dashboard.heatmap[dashboard.heatmap.length - 1]!.day).toBe(dashboard.today);
     expect(dashboard.streak.current).toBe(0);
     expect(dashboard.totals.problems).toBe(0);
-    expect(dashboard.fit.retrievedOn).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(dashboard.fit!.retrievedOn).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
   it('adapts the plan to the time available and keeps it stable through the day', async () => {

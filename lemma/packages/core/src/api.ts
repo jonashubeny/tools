@@ -2,22 +2,30 @@ import type { PublicAnswerSpec } from './answer/types';
 import type {
   AdmissionRoute,
   Area,
+  ExamFacts,
   FigureSpec,
   FitCourse,
+  GoalId,
   LabLink,
   LessonStep,
   Level,
   ProblemKind,
   Resource,
+  SkillRole,
+  SlotFormat,
   SolutionStep,
   SourceRef,
   Track,
   WhyLenses,
 } from './content/types';
 import type { L, Locale } from './i18n';
+import type { DiagnosticOutcome, DiagnosticStage, DiagnosticVerdict } from './learning/diagnostic';
 import type { ErrorFamily, ErrorType } from './learning/errors';
 import type { ExamReport, GradeScale } from './learning/exam';
-import type { GateStatus, MasteryLevel, PracticeContext } from './learning/mastery';
+import type { EstimateConfidence, GateStatus, MasteryLevel, PracticeContext } from './learning/mastery';
+import type { PathReason, PathState } from './learning/path';
+import type { PriorityTerms, Purpose } from './learning/priority';
+import type { Readiness } from './learning/readiness';
 import type { BlockKind, ReasonCode } from './learning/session';
 import type { StreakSummary } from './learning/streak';
 
@@ -56,6 +64,12 @@ export interface SettingsDto {
   confidencePrompt: boolean;
   /** The syllabus topic the class is on. */
   currentTopic: number | null;
+  /** What the learner is preparing for. */
+  goal: GoalId;
+  /** Study day of the examination, for an examination goal; null when not set. */
+  examDay: string | null;
+  /** Skills the class is on now (examination goals; the school goal has `currentTopic`). */
+  inSchool: string[];
   tests: TestDto[];
   pauses: PauseDto[];
   /** Lower bounds in percent for grades 1–4; null hides grades. */
@@ -92,6 +106,8 @@ export interface UserDto {
   createdAt: number;
   /** The last time any of the account's sessions was seen; null if nobody has signed in yet. */
   lastSeenAt: number | null;
+  /** Accounts that may see this learner's work and set work for them. */
+  teachers: string[];
 }
 
 export interface MeDto {
@@ -108,6 +124,33 @@ export interface MeDto {
   /** Today's study day in the server's configured time zone. */
   today: string;
   tutor: { enabled: boolean; provider: string | null; model: string | null };
+  /** Who can see this learner's work: shown to the learner, so that it is never a surprise. */
+  teachers: string[];
+  /** How many learners this account teaches; above zero, the teaching pages are offered. */
+  students: number;
+}
+
+// -------------------------------------------------------------------------------- goals
+
+/** A goal as the interface shows it: what it is, and what stands behind it. */
+export interface GoalDto {
+  id: GoalId;
+  kind: 'school' | 'entrance';
+  title: L;
+  short: L;
+  description: L;
+  grade: 5 | 7 | 9 | null;
+  facts: ExamFacts | null;
+  /** Past papers whose tasks were classified by reading; the weights rest on these. */
+  papersRead: number;
+  /** The weights rest on few papers and may move when more are read. */
+  provisional: boolean;
+  counts: { tested: number; prerequisite: number; enrichment: number; paperOnly: number };
+  /**
+   * For an examination goal: how many items the official specification has for it, and
+   * how many of them the app has problems for. Null for the school goal.
+   */
+  spec: { items: number; withProblems: number; missing: { id: string; text: L }[] } | null;
 }
 
 // ------------------------------------------------------------------------------- skills
@@ -138,8 +181,21 @@ export interface SkillDto {
   lastPracticedAt: number | null;
   fit: string[];
   annualReview: boolean;
-  /** A direct prerequisite is below "familiar". */
+  /** A direct prerequisite is below "familiar" and not made likely by a diagnostic. */
   weakPrereq: string | null;
+  /** Why the skill belongs to the learner's goal; null for the school goal. */
+  role: SkillRole | null;
+  /** Share of the examination's points in the papers that were read, 0–1. */
+  weight: number;
+  /** For entrance skills: the grade by whose end the specification expects it. */
+  stage: 5 | 7 | 9 | null;
+  /** Cannot be practised on a screen (geometric constructions). */
+  paperOnly: boolean;
+  /** Where the skill stands on the learner's path, and the rule that put it there. */
+  path: PathState;
+  pathReason: PathReason;
+  /** How far the estimate can be relied on. */
+  confidence: EstimateConfidence;
 }
 
 export interface ConceptDetailDto extends SkillDto {
@@ -166,6 +222,33 @@ export interface ConceptDetailDto extends SkillDto {
   missions: { id: string; title: L }[];
   problemFamilies: { id: string; title: L; kind: ProblemKind; levels: Level[] }[];
   topicTitle: L | null;
+  /** For entrance skills: the items of the official specification, and the tasks found in past papers. */
+  spec: { id: string; text: L }[];
+  evidence: { read: number; rules: number; papersRead: number } | null;
+  /** What the model has counted, beyond the gates: shown so that the level can be checked. */
+  record: {
+    firstTry: number;
+    hinted: number;
+    guessed: number;
+    families: number;
+    familyCap: number;
+    timed: { attempts: number; solved: number };
+    reviews: { passed: number; failed: number };
+    days: number;
+    lastSuccessAt: number | null;
+    diagnosed: number;
+    placed: boolean;
+  };
+}
+
+/** A solved example of a skill, to read before practising it. */
+export interface WorkedExampleDto {
+  concept: string;
+  level: Level;
+  prompt: L;
+  figure: FigureSpec | null;
+  solution: SolutionStep[];
+  answerTex: L;
 }
 
 export interface SyllabusTopicDto {
@@ -226,13 +309,25 @@ export interface ProblemDto {
   estSeconds: number;
   wrongAttempts: number;
   triesLeft: number;
-  status: 'open' | 'solved' | 'failed' | 'skipped';
+  /** 'recorded': answered in a test or placement that is not over, so nothing is said yet. */
+  status: 'open' | 'solved' | 'failed' | 'skipped' | 'recorded';
   it: boolean;
   applied: boolean;
   /** Present once the problem is resolved. */
   outcome: OutcomeDto | null;
   /** The learner's previous wrong inputs on this problem. */
   previousInputs: string[];
+  /** Why this problem was chosen, where a selection was made; null otherwise. */
+  why: ProblemWhyDto | null;
+}
+
+/** The reason a problem of an adaptive session was chosen, in terms the interface can word. */
+export interface ProblemWhyDto {
+  purpose: Purpose;
+  /** The term of the score that weighed most. */
+  because: keyof PriorityTerms | 'confidence';
+  /** The skill this one is being practised for. Withheld while the topic is hidden. */
+  forSkill: { id: string; title: L } | null;
 }
 
 export interface ErrorGuessDto {
@@ -283,7 +378,8 @@ export interface SelfModelDto {
 }
 
 export interface AnswerResultDto {
-  verdict: 'correct' | 'incorrect' | 'invalid';
+  /** 'recorded': taken without comment — a placement test says nothing until its end. */
+  verdict: 'correct' | 'incorrect' | 'invalid' | 'recorded';
   /** Why the input was not accepted (verdict 'invalid'). */
   message: L | null;
   resolved: boolean;
@@ -292,9 +388,14 @@ export interface AnswerResultDto {
   problem: ProblemDto;
 }
 
+/** What a run is: one practice context throughout, or a session that chooses as it goes. */
+export type RunKind = PracticeContext | 'adaptive';
+
 export interface RunDto {
   id: string;
-  context: PracticeContext;
+  context: RunKind;
+  /** For a placement test: its record, to be read once the run is finished. */
+  diagnostic: string | null;
   total: number;
   position: number;
   finished: boolean;
@@ -315,7 +416,7 @@ export interface RunSummaryDto {
 }
 
 export interface StartRunRequest {
-  context: PracticeContext;
+  context: RunKind;
   concept?: string;
   skills?: string[];
   topic?: number;
@@ -346,6 +447,8 @@ export interface PlanBlockDto {
   lab: string | null;
   status: 'todo' | 'active' | 'done';
   runId: string | null;
+  /** For work the teacher set. */
+  assignment: AssignmentDto | null;
 }
 
 export interface PlanDto {
@@ -412,6 +515,17 @@ export interface DashboardDto {
   streak: StreakSummary;
   heatmap: DayCellDto[];
   recent: RecentItemDto[];
+  /** What the learner is preparing for. */
+  goal: { id: GoalId; kind: 'school' | 'entrance'; title: L; short: L };
+  /** For an examination goal: the next step, readiness and what the teacher set. Null otherwise. */
+  entrance: {
+    next: NextStepDto | null;
+    readiness: ReadinessDto;
+    diagnostic: { done: boolean; skipped: boolean; count: number; lastAt: number | null; running: string | null };
+  } | null;
+  /** Work the teacher set: what is open, and the last few things done. Whatever the goal. */
+  assignments: AssignmentDto[];
+  /** The FIT widgets belong to the school goal; null for an examination goal. */
   fit: {
     /** Share of the FIT bridging-seminar skills at "familiar" or better, 0–1. */
     bridgeCoverage: number;
@@ -420,7 +534,7 @@ export interface DashboardDto {
     reasoningProgress: number;
     stale: boolean;
     retrievedOn: string;
-  };
+  } | null;
   totals: {
     problems: number;
     solved: number;
@@ -463,7 +577,14 @@ export interface ErrorSummaryDto {
   /** Weekly rates, oldest first. */
   weekly: { week: string; attempts: number; slip: number; procedure: number; concept: number }[];
   /** Where each error type happens. */
-  byTopic: { topic: number | null; title: L; counts: Partial<Record<ErrorType, number>>; total: number }[];
+  byTopic: {
+    topic: number | null;
+    title: L;
+    /** Set where the grouping is by area of mathematics (goals without syllabus chapters). */
+    area?: Area;
+    counts: Partial<Record<ErrorType, number>>;
+    total: number;
+  }[];
   recent: MistakeDto[];
   /** Statements such as "sign errors: 18 % → 7 %". */
   trends: { type: ErrorType | ErrorFamily; from: number; to: number }[];
@@ -477,6 +598,21 @@ export interface ExamItemDto {
   problem: ProblemDto;
   input: string;
   seconds: number;
+  /** For a test with a fixed structure: the task's label, what it is worth and how it is answered. */
+  slot: { label: string; points: number; format: SlotFormat; bundle: string | null } | null;
+}
+
+/** What a practice test of an examination covers, and what it leaves out. */
+export interface ExamStructureDto {
+  goal: GoalId;
+  /** Points of the real test. */
+  examPoints: number;
+  /** Points that can be earned on a screen. */
+  onScreenPoints: number;
+  /** Points of tasks that are drawn on paper and left out here. */
+  offScreenPoints: number;
+  /** Points of each bundle by the number of its sub-questions answered correctly. */
+  bundles: Record<string, number[]>;
 }
 
 export interface ExamDto {
@@ -489,6 +625,8 @@ export interface ExamDto {
   minutes: number;
   items: ExamItemDto[];
   report: ExamReportDto | null;
+  /** Present for a practice test that follows an examination's structure. */
+  structure: ExamStructureDto | null;
 }
 
 export interface ExamReportDto extends ExamReport {
@@ -503,17 +641,29 @@ export interface ExamReportDto extends ExamReport {
     error: ErrorType | null;
     seconds: number;
     expectedSeconds: number;
+    /** For a test with a fixed structure. */
+    label?: string;
+    points?: number;
+    earned?: number;
+    bundle?: string | null;
   }[];
+  /** For an examination practice test: when to come back to what was missed. */
+  followUp?: { skill: string; inDays: number; kind: 'repair' | 'review' }[];
+  structure?: ExamStructureDto | null;
 }
 
 export interface ExamListItemDto {
   id: string;
+  blueprint: string;
   title: L;
   startedAt: number;
   finishedAt: number | null;
   percent: number | null;
   grade: number | null;
   items: number;
+  /** For an examination practice test: points out of those a screen allows. */
+  points: number | null;
+  maxPoints: number | null;
 }
 
 export interface CreateExamRequest {
@@ -534,6 +684,7 @@ export interface AnalyticsDto {
     unaidedRate: number | null;
     avgLevel: number | null;
     medianSeconds: number | null;
+    /** Attempts on a skill whose scheduled review had come due, as the learner model counts them. */
     reviewsPassed: number;
     reviewsFailed: number;
     minutes: number;
@@ -554,9 +705,384 @@ export interface AnalyticsDto {
   }[];
   levels: Record<MasteryLevel, number>;
   topics: { topic: number; title: L; progress: number; attempts: number; accuracy: number | null }[];
+  /** The same by area of mathematics, for every goal. */
+  areas: {
+    area: Area;
+    skills: number;
+    progress: number;
+    attempts: number;
+    accuracy: number | null;
+    firstTry: number | null;
+  }[];
+  /** How timed work and untimed practice compare: they measure different things. */
+  timed: {
+    untimed: { problems: number; accuracy: number | null; firstTry: number | null; medianPace: number | null };
+    timed: { problems: number; accuracy: number | null; firstTry: number | null; medianPace: number | null };
+  };
   contexts: { context: PracticeContext; problems: number; accuracy: number | null }[];
   retention: { due: number; fading: number; scheduled: number; avgRetention: number | null };
   records: { title: L; value: string; at: number | null }[];
+}
+
+// -------------------------------------------------------------------------- assignments
+
+export const ASSIGNMENT_KINDS = ['practice', 'review', 'remediation', 'lesson', 'test'] as const;
+/**
+ * Work a teacher sets: practice of one or several skills, a mixed review, a remediation
+ * (the skill from its easiest problems, its prerequisites first), a lesson or worked
+ * example to study, or a timed practice test.
+ */
+export type AssignmentKind = (typeof ASSIGNMENT_KINDS)[number];
+
+export interface AssignmentDto {
+  id: string;
+  kind: AssignmentKind;
+  skills: { id: string; title: L }[];
+  /** A line from the teacher, shown to the student. */
+  note: string;
+  minutes: number;
+  /** How many problems, where the kind is a set of problems. */
+  count: number | null;
+  dueDay: string | null;
+  createdBy: string;
+  createdAt: number;
+  status: 'open' | 'done' | 'cancelled';
+  doneAt: number | null;
+  /** How it went, once started. */
+  result: { problems: number; solved: number; unaided: number; hinted: number } | null;
+}
+
+export interface CreateAssignmentRequest {
+  kind: AssignmentKind;
+  skills: string[];
+  note?: string;
+  minutes?: number;
+  count?: number;
+  dueDay?: string | null;
+}
+
+/** What a teacher noted about a skill in a session: it steers selection, never the level. */
+export interface FocusDto {
+  skill: string;
+  title: L;
+  kind: 'difficulty' | 'covered';
+  setBy: string;
+  setAt: number;
+  expiresAt: number;
+}
+
+// ----------------------------------------------------------- next step, readiness, map
+
+/** What to do next and why, in terms the interface can word. */
+export interface NextStepDto {
+  skill: { id: string; title: L };
+  purpose: Purpose;
+  because: keyof PriorityTerms;
+  /** The skill this one is practised for, when it is a prerequisite in the way. */
+  forSkill: { id: string; title: L } | null;
+  /** The terms of the score, for whoever wants to see the arithmetic. */
+  terms: PriorityTerms;
+  score: number;
+}
+
+export interface ReadinessDto extends Readiness {
+  goal: GoalId;
+  examDay: string | null;
+  daysLeft: number | null;
+  /** The weights rest on few papers. */
+  provisional: boolean;
+  /** Titles of every skill named in the report. */
+  titles: Record<string, L>;
+  /** The examination by weight: each tested skill and where the learner stands on it. */
+  skills: { id: string; weight: number; level: MasteryLevel; path: PathState; paperOnly: boolean }[];
+}
+
+export interface CurriculumDto {
+  goal: GoalDto;
+  skills: (SkillDto & {
+    /** Tasks assigned to the skill in past papers. */
+    tasks: { read: number; rules: number };
+    /** The weakest prerequisite in the way, if any. */
+    blockedBy: string | null;
+    /** Skills that build on this one, within the goal. */
+    unlocks: string[];
+    /** Open work from the teacher names it. */
+    assigned: boolean;
+    focus: 'difficulty' | 'covered' | null;
+    inSchool: boolean;
+  })[];
+  /** The best next steps, the first being what "continue" does. */
+  next: NextStepDto[];
+  diagnostic: { done: boolean; skipped: boolean; count: number; lastAt: number | null; running: string | null };
+}
+
+// --------------------------------------------------------------------------- diagnostic
+
+export interface DiagnosticDto {
+  id: string;
+  goal: GoalId;
+  runId: string;
+  startedAt: number;
+  finishedAt: number | null;
+  items: {
+    problemId: string;
+    skill: string;
+    title: L;
+    level: Level;
+    stage: DiagnosticStage;
+    anchor: string;
+    outcome: DiagnosticOutcome;
+    seconds: number;
+    error: ErrorType | null;
+  }[];
+  verdicts: { skill: string; title: L; verdict: DiagnosticVerdict }[];
+  /** Skills that were not asked and are presumed from their neighbours. */
+  presumed: { id: string; title: L; direction: 'up' | 'down' }[];
+  counts: { asked: number; correct: number; skipped: number };
+}
+
+// ----------------------------------------------------------------------------- teaching
+
+export interface WeekFiguresDto {
+  problems: number;
+  solved: number;
+  /** Right at the first submission. */
+  firstTry: number;
+  /** Right at the first submission and without a hint. */
+  unaided: number;
+  hinted: number;
+  /** Sum of the time recorded on problems; a floor on time spent, not a measure of it. */
+  minutes: number;
+  activeDays: number;
+  sessions: number;
+}
+
+/** Something about a student that deserves a look, with what it rests on. */
+export interface AttentionDto {
+  kind:
+    | 'no-diagnostic'
+    | 'inactive'
+    | 'review-failed'
+    | 'recurring-error'
+    | 'misconception'
+    | 'stuck'
+    | 'neglected'
+    | 'overdue-assignment'
+    | 'guessing'
+    | 'hint-reliance';
+  skill: { id: string; title: L } | null;
+  error: ErrorType | null;
+  /** The figure behind it: days, errors, attempts. */
+  count: number;
+}
+
+/** The most useful next thing for the teacher to do, by a stated rule. */
+export interface InterventionDto {
+  kind:
+    'run-diagnostic' | 'explain' | 'assign-remediation' | 'assign-review' | 'timed-test' | 'check-in' | 'keep-going';
+  skill: { id: string; title: L } | null;
+  error: ErrorType | null;
+  /** The rule that fired, as a code the interface words. */
+  reason: string;
+}
+
+export interface StudentSummaryDto {
+  username: string;
+  name: string;
+  goal: { id: GoalId; kind: 'school' | 'entrance'; title: L; short: L };
+  examDay: string | null;
+  daysLeft: number | null;
+  lastActiveAt: number | null;
+  week: WeekFiguresDto;
+  previousWeek: WeekFiguresDto;
+  /** Null for the school goal, which has no examination to be ready for. */
+  readiness: ReadinessDto | null;
+  attention: AttentionDto[];
+  intervention: InterventionDto;
+  openAssignments: number;
+  diagnosed: boolean;
+  /** Skills by path state. */
+  paths: Record<PathState, number>;
+}
+
+export interface NoteDto {
+  id: string;
+  student: string;
+  skill: { id: string; title: L } | null;
+  body: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** One problem of a student's history, with everything that was typed. */
+export interface HistoryItemDto {
+  problemId: string;
+  at: number;
+  skill: string;
+  title: L;
+  level: Level;
+  context: PracticeContext;
+  purpose: Purpose | null;
+  prompt: L;
+  figure: FigureSpec | null;
+  status: 'solved' | 'failed' | 'skipped';
+  firstTry: boolean;
+  hints: number;
+  /** Asked the AI tutor while the problem was open. */
+  tutor: boolean;
+  seconds: number;
+  estSeconds: number;
+  confidence: 'sure' | 'think' | 'guess' | null;
+  error: ErrorType | null;
+  errorConfirmed: boolean;
+  note: L | null;
+  /** Every submission, in order; `text` where the input is not readable by itself. */
+  inputs: { input: string; text: L | null; verdict: string; at: number }[];
+  answerTex: L;
+  answerText: L | null;
+}
+
+export interface MisconceptionDto {
+  skill: { id: string; title: L };
+  /** What the wrong answers have in common, as the content describes it. */
+  note: L;
+  error: ErrorType;
+  count: number;
+  lastAt: number;
+}
+
+export interface StudentDetailDto extends StudentSummaryDto {
+  skills: SkillDto[];
+  /** The best next steps the selection would take: the student's current path. */
+  path: NextStepDto[];
+  areas: AnalyticsDto['areas'];
+  timed: AnalyticsDto['timed'];
+  totals: AnalyticsDto['totals'] & { firstTry: number; hinted: number; guessed: number };
+  weekly: (WeekFiguresDto & { week: string })[];
+  /**
+   * Errors by kind, counting only those whose kind rests on something: confirmed by the
+   * learner, a known wrong answer or pattern, or an answer that came far too fast.
+   */
+  errors: { type: ErrorType; family: ErrorFamily; recent: number; previous: number }[];
+  /** Errors whose kind could not be told from the answer and was not confirmed. */
+  errorsUndetermined: { recent: number; previous: number };
+  misconceptions: MisconceptionDto[];
+  /** Tested skills not touched for a long time, or never. */
+  neglected: { id: string; title: L; weight: number; daysSince: number | null }[];
+  strongest: { id: string; title: L; level: MasteryLevel }[];
+  diagnostics: DiagnosticDto[];
+  assignments: AssignmentDto[];
+  focus: FocusDto[];
+  exams: ExamListItemDto[];
+  heatmap: DayCellDto[];
+  recent: RecentItemDto[];
+  inSchool: string[];
+  sessionMinutes: number;
+  notes: NoteDto[];
+  sessions: TeachSessionSummaryDto[];
+}
+
+/** Two or more students beside each other, skill by skill. Deliberately without a total. */
+export interface CompareDto {
+  students: StudentSummaryDto[];
+  skills: {
+    id: string;
+    title: L;
+    area: Area;
+    cells: Record<
+      string,
+      { level: MasteryLevel; path: PathState; role: SkillRole | null; weight: number; attempts: number } | null
+    >;
+  }[];
+  weekly: Record<string, (WeekFiguresDto & { week: string })[]>;
+}
+
+// --------------------------------------------------------------------- tutoring sessions
+
+export const SESSION_OUTCOMES = ['independent', 'helped', 'not-yet'] as const;
+/** How a problem went in a session, as the teacher saw it. */
+export type SessionOutcome = (typeof SESSION_OUTCOMES)[number];
+
+export interface TeachItemDto {
+  id: string;
+  skill: string;
+  title: L;
+  generator: string;
+  seed: number;
+  level: Level;
+  outcome: SessionOutcome | null;
+  note: string;
+  at: number;
+}
+
+/** A problem shown in a session: the teacher sees the solution, and decides when to show it. */
+export interface TeachProblemDto {
+  item: TeachItemDto;
+  prompt: L;
+  figure: FigureSpec | null;
+  answer: PublicAnswerSpec;
+  hints: L[];
+  solution: SolutionStep[];
+  answerTex: L;
+  estSeconds: number;
+  misconceptions: { note: L; error: ErrorType }[];
+}
+
+export interface TeachBriefDto {
+  strongest: { id: string; title: L; level: MasteryLevel }[];
+  gaps: { id: string; title: L; weight: number; level: MasteryLevel; holdsUp: { id: string; title: L }[] }[];
+  mistakes: MistakeDto[];
+  misconceptions: MisconceptionDto[];
+  priorities: NextStepDto[];
+  /** A suggested order for the session, with a rough time for each step. */
+  sequence: {
+    kind: 'warm-up' | 'explain' | 'practise' | 'check' | 'homework';
+    skill: { id: string; title: L } | null;
+    minutes: number;
+    /** The rule behind the step, as a code the interface words. */
+    reason: string;
+    error: ErrorType | null;
+  }[];
+  since: {
+    lastSessionAt: number | null;
+    /** What the last session set down as next priorities. */
+    next: string;
+    homework: AssignmentDto[];
+    problems: number;
+    activeDays: number;
+  };
+}
+
+export interface TeachWrapDto {
+  covered: string[];
+  improved: string[];
+  hard: string[];
+  misconceptions: string;
+  homework: { skills: string[]; minutes: number; dueDay: string | null; note: string } | null;
+  next: string;
+  summary: string;
+}
+
+export interface TeachSessionSummaryDto {
+  id: string;
+  student: string;
+  startedAt: number;
+  finishedAt: number | null;
+  items: number;
+  covered: { id: string; title: L }[];
+  next: string;
+}
+
+export interface TeachSessionDto {
+  id: string;
+  student: string;
+  startedAt: number;
+  finishedAt: number | null;
+  brief: TeachBriefDto;
+  items: TeachItemDto[];
+  wrap: TeachWrapDto | null;
+  /** Skills that can be shown: the student's goal, with titles and the levels on offer. */
+  skills: { id: string; title: L; area: Area; levels: Level[]; level: MasteryLevel; path: PathState }[];
 }
 
 // ---------------------------------------------------------------------------------- FIT

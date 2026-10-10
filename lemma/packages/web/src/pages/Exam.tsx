@@ -20,7 +20,7 @@ import { FAMILY_COLOR, FAMILY_NAMES } from '../app/labels';
 import { useExam, useMe, useRefresh } from '../app/queries';
 import { Figure } from '../figure/Figure';
 import { cn } from '../lib/cn';
-import { clock, duration, pct } from '../lib/format';
+import { clock, duration, inDays, pct, plural } from '../lib/format';
 import { RichText, Tex } from '../lib/Math';
 import {
   Badge,
@@ -131,6 +131,13 @@ function Running({ exam, settings }: { exam: ExamDto; settings: SettingsDto }) {
   const item = exam.items[current]!;
   const unanswered = answers.filter((answer) => answer.trim() === '').length;
   const low = remaining < 120_000;
+  const structure = exam.structure;
+  // A task's label as in the booklet, where the test has a fixed structure.
+  const labelOf = (index: number): string => exam.items[index]?.slot?.label ?? String(index + 1);
+  const bundleTop = (bundle: string): number => {
+    const table = structure?.bundles[bundle] ?? [];
+    return table[table.length - 1] ?? 0;
+  };
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -150,6 +157,14 @@ function Running({ exam, settings }: { exam: ExamDto; settings: SettingsDto }) {
         </Button>
       </div>
 
+      {structure && structure.offScreenPoints > 0 && (
+        <p className="mb-3 text-[13px] text-ink-3">
+          {t(
+            `Na obrazovce jde získat ${structure.onScreenPoints} z ${structure.examPoints} bodů. Konstrukční úlohy (${structure.offScreenPoints} b.) se rýsují na papír a tady chybí; čas je o ně zkrácený.`,
+            `${structure.onScreenPoints} of the ${structure.examPoints} points can be earned on a screen. The construction tasks (${structure.offScreenPoints} points) are drawn on paper and missing here; the time is shortened by their share.`,
+          )}
+        </p>
+      )}
       <nav className="mb-4 flex flex-wrap gap-1.5" aria-label={t('Úlohy', 'Problems')}>
         {exam.items.map((entry, index) => (
           <button
@@ -157,9 +172,9 @@ function Running({ exam, settings }: { exam: ExamDto; settings: SettingsDto }) {
             type="button"
             onClick={() => go(index)}
             aria-current={index === current}
-            aria-label={`${t('Úloha', 'Problem')} ${index + 1}${answers[index]?.trim() ? `, ${t('zodpovězena', 'answered')}` : ''}`}
+            aria-label={`${t('Úloha', 'Problem')} ${labelOf(index)}${answers[index]?.trim() ? `, ${t('zodpovězena', 'answered')}` : ''}`}
             className={cn(
-              'h-8 w-9 rounded-md border font-mono text-[13px]',
+              'h-8 min-w-9 rounded-md border px-1.5 font-mono text-[13px]',
               index === current
                 ? 'border-accent bg-accent-wash text-ink'
                 : answers[index]?.trim()
@@ -167,23 +182,37 @@ function Running({ exam, settings }: { exam: ExamDto; settings: SettingsDto }) {
                   : 'border-border bg-surface-1 text-ink-3 hover:bg-surface-2',
             )}
           >
-            {index + 1}
+            {labelOf(index)}
           </button>
         ))}
       </nav>
 
       <Card className="p-5 sm:p-6">
         <div className="mb-3 flex items-center gap-2">
-          <Badge>
-            {t('Úloha', 'Problem')} {current + 1}/{exam.items.length}
-          </Badge>
-          <Badge tone="outline">
-            {item.problem.level}{' '}
-            {t(
-              item.problem.level === 1 ? 'bod' : item.problem.level < 5 ? 'body' : 'bodů',
-              item.problem.level === 1 ? 'point' : 'points',
-            )}
-          </Badge>
+          {item.slot ? (
+            <>
+              <Badge>
+                {t('Úloha', 'Task')} {item.slot.label}
+              </Badge>
+              <Badge tone="outline">
+                {item.slot.bundle
+                  ? t(
+                      `část úlohy za ${bundleTop(item.slot.bundle)} b. — bodují se dohromady`,
+                      `part of a task worth ${bundleTop(item.slot.bundle)} points — marked together`,
+                    )
+                  : plural(item.slot.points, t.locale, ['bod', 'body', 'bodů'], ['point', 'points'])}
+              </Badge>
+            </>
+          ) : (
+            <>
+              <Badge>
+                {t('Úloha', 'Problem')} {current + 1}/{exam.items.length}
+              </Badge>
+              <Badge tone="outline">
+                {plural(item.problem.level, t.locale, ['bod', 'body', 'bodů'], ['point', 'points'])}
+              </Badge>
+            </>
+          )}
         </div>
         <div className="text-[1.0625rem] leading-relaxed">
           <RichText text={t(item.problem.prompt)} />
@@ -391,6 +420,23 @@ function Report({ exam }: { exam: ExamDto }) {
   if (!report) return <Loading />;
 
   const titleOf = (skill: string): string => (report.skillTitles[skill] ? t(report.skillTitles[skill]) : skill);
+  const structure = report.structure ?? exam.structure;
+  // The next session after a test: the skills that cost the most points, chosen problem by problem.
+  const weakest = report.next.slice(0, 4).map((entry) => entry.skill);
+  const practiseWeakest = async (): Promise<void> => {
+    setBusy('weakest');
+    try {
+      const started = await api.post<StartRunResponse>(
+        '/api/practice/start',
+        weakest.length >= 2
+          ? { context: 'adaptive', skills: weakest, count: 10 }
+          : { context: 'blocked', concept: weakest[0], count: 6 },
+      );
+      navigate(`/practice/${started.run.id}`);
+    } finally {
+      setBusy(null);
+    }
+  };
   const withoutSlips =
     report.maxPoints === 0 ? 0 : (report.points + report.errors.pointsLostToSlips) / report.maxPoints;
   const practise = async (skill: string): Promise<void> => {
@@ -406,6 +452,8 @@ function Report({ exam }: { exam: ExamDto }) {
       setBusy(null);
     }
   };
+  // When the review schedule brings each missed skill back.
+  const followUp = new Map((report.followUp ?? []).map((entry) => [entry.skill, entry.inDays]));
   const classify = async (problemId: string, type: ErrorType): Promise<void> => {
     await api.post(`/api/problems/${problemId}/classify`, { errorType: type });
     client.setQueryData(['exam', exam.id], await api.post<ExamDto>(`/api/exams/${exam.id}/refresh`));
@@ -422,19 +470,32 @@ function Report({ exam }: { exam: ExamDto }) {
       <div className="space-y-5">
         <Card className="p-5">
           <div className="grid gap-x-10 gap-y-5 md:grid-cols-[auto_1fr]">
-            <div>
-              <div className="mono-label">{t('Výsledek', 'Result')}</div>
-              <div className="mt-1 text-5xl font-semibold tracking-tight">{pct(report.percent / 100, t.locale)}</div>
-              <div className="mt-1.5 text-sm text-ink-2">
-                {report.points}/{report.maxPoints} {t('bodů', 'points')}
-                {report.grade !== null && (
-                  <>
-                    {' '}
-                    · {t('známka', 'grade')} <b className="text-ink">{report.grade}</b>
-                  </>
-                )}
+            {structure ? (
+              <div>
+                <div className="mono-label">{t('Výsledek', 'Result')}</div>
+                <div className="mt-1 text-5xl font-semibold tracking-tight tabular-nums">
+                  {report.points}
+                  <span className="text-2xl text-ink-3">/{report.maxPoints}</span>
+                </div>
+                <div className="mt-1.5 text-sm text-ink-2">
+                  {t('bodů z těch, které jdou získat na obrazovce', 'points of those a screen allows')}
+                </div>
               </div>
-            </div>
+            ) : (
+              <div>
+                <div className="mono-label">{t('Výsledek', 'Result')}</div>
+                <div className="mt-1 text-5xl font-semibold tracking-tight">{pct(report.percent / 100, t.locale)}</div>
+                <div className="mt-1.5 text-sm text-ink-2">
+                  {report.points}/{report.maxPoints} {t('bodů', 'points')}
+                  {report.grade !== null && (
+                    <>
+                      {' '}
+                      · {t('známka', 'grade')} <b className="text-ink">{report.grade}</b>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
               <StatTile label={t('Správně', 'Correct')} value={`${report.correct}/${report.items}`} />
               <StatTile
@@ -457,6 +518,18 @@ function Report({ exam }: { exam: ExamDto }) {
                 'The grade follows the scale in Settings; your school’s may differ.',
               )}
             </p>
+          )}
+          {structure && (
+            <Notice
+              tone="info"
+              className="mt-4"
+              title={t('Čím se tenhle test liší od skutečného', 'How this test differs from the real one')}
+            >
+              {t(
+                `Skutečný test má ${structure.examPoints} bodů. ${structure.offScreenPoints} z nich je za konstrukční úlohy, které se rýsují na papír a tady nejsou. U úloh, kde se ve skutečnosti hodnotí celý postup, se tu kontroluje jen výsledek. Hranici pro přijetí si určuje každá škola sama, takže z bodů nejde vyčíst, jestli by to stačilo.`,
+                `The real test has ${structure.examPoints} points. ${structure.offScreenPoints} of them are for construction tasks, which are drawn on paper and are not here. Where the real test marks the whole working, only the result is checked here. Every school sets its own threshold, so the points do not say whether it would have been enough.`,
+              )}
+            </Notice>
           )}
         </Card>
 
@@ -517,8 +590,8 @@ function Report({ exam }: { exam: ExamDto }) {
             {report.time.slowItems > 0 && (
               <p className="mt-3 text-[13px] text-ink-3">
                 {t(
-                  `U ${report.time.slowItems} úloh jsi strávil víc než dvojnásobek obvyklého času.`,
-                  `On ${report.time.slowItems} problems you spent more than twice the usual time.`,
+                  `Úlohy, které trvaly víc než dvojnásobek obvyklého času: ${report.time.slowItems}.`,
+                  `Problems that took more than twice the usual time: ${report.time.slowItems}.`,
                 )}
               </p>
             )}
@@ -535,6 +608,24 @@ function Report({ exam }: { exam: ExamDto }) {
               </p>
             ) : (
               <ol className="mt-2 divide-y divide-border">
+                {structure && (
+                  <li className="flex flex-wrap items-center justify-between gap-3 py-2.5">
+                    <span className="min-w-0 flex-1 text-[13px] text-ink-2">
+                      {t(
+                        'Další sezení: to, co stálo nejvíc bodů, úlohu po úloze podle toho, jak půjde.',
+                        'The next session: what cost the most points, problem by problem as it goes.',
+                      )}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      busy={busy === 'weakest'}
+                      onClick={() => void practiseWeakest()}
+                    >
+                      {t('Začít', 'Start')}
+                    </Button>
+                  </li>
+                )}
                 {report.next.map((entry) => (
                   <li key={entry.skill} className="flex items-center justify-between gap-3 py-2.5">
                     <div className="min-w-0">
@@ -546,6 +637,12 @@ function Report({ exam }: { exam: ExamDto }) {
                         {entry.mostly === 'unanswered'
                           ? t('bez odpovědi', 'unanswered')
                           : t(FAMILY_NAMES[entry.mostly]).toLowerCase()}
+                        {followUp.has(entry.skill) && (
+                          <span className="text-ink-3">
+                            {' · '}
+                            {t('vrátí se', 'comes back')} {inDays(followUp.get(entry.skill)!, t.locale)}
+                          </span>
+                        )}
                       </div>
                     </div>
                     <Button
@@ -672,7 +769,7 @@ function ReviewItem({
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
       >
-        <span className="mt-0.5 w-5 shrink-0 font-mono text-xs text-ink-3">{item.index + 1}</span>
+        <span className="mt-0.5 w-8 shrink-0 font-mono text-xs text-ink-3">{item.slot?.label ?? item.index + 1}</span>
         <span className="mt-0.5 shrink-0">
           <StatusIcon tone={tone} />
         </span>
@@ -704,6 +801,21 @@ function ReviewItem({
                 <Tex tex={t(outcome.answerTex)} />
               </span>
             )}
+            {detail.points !== undefined && detail.earned !== undefined && (
+              <span
+                title={
+                  detail.bundle
+                    ? t(
+                        'Část úlohy bodované dohromady: body se dělí mezi správné části.',
+                        'Part of a task marked together: its points are shared among the right parts.',
+                      )
+                    : undefined
+                }
+              >
+                {String(detail.earned).replace('.', t.locale === 'cs' ? ',' : '.')}/
+                {String(detail.points).replace('.', t.locale === 'cs' ? ',' : '.')} {t('b.', 'pts')}
+              </span>
+            )}
             <span className="text-ink-3">
               {clock(detail.seconds)} / {clock(detail.expectedSeconds)}
             </span>
@@ -711,7 +823,7 @@ function ReviewItem({
         </span>
       </button>
       {open && outcome && (
-        <div className="mt-3 space-y-3 pl-[52px]">
+        <div className="mt-3 space-y-3 pl-[64px]">
           {item.problem.figure && <Figure spec={item.problem.figure} maxWidth={420} />}
           {detail.answered && !detail.correct && (
             <label className="flex flex-wrap items-center gap-2 text-[13px] text-ink-2">

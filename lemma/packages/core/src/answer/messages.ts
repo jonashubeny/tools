@@ -120,3 +120,13 @@ export const POINT_DIMENSIONS = (dims: number): L =>
   L(`Bod má mít ${dims} souřadnice, např. [2; -1].`, `The point needs ${dims} coordinates, e.g. [2; -1].`);
 
 export const CHOOSE_OPTION = L('Vyber odpověď.', 'Choose an option.');
+
+export const REDUCE_FRACTION = L(
+  'Hodnota sedí, ale zlomek ještě není v základním tvaru. Zkrať ho.',
+  'The value is right, but the fraction is not in lowest terms yet. Reduce it.',
+);
+
+export const AS_FRACTION = L(
+  'Výsledek zapiš jako celé číslo nebo zlomek v základním tvaru, například 3/4.',
+  'Write the result as a whole number or a fraction in lowest terms, for example 3/4.',
+);

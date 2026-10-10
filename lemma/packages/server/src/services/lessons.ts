@@ -1,7 +1,17 @@
-import { getConcept, getLesson } from '@lemma/content';
-import { type LessonDto, ACTIVITY, markLessonSeen } from '@lemma/core';
+import { FORMAT_TAGS, generatorsFor, getConcept, getLesson } from '@lemma/content';
+import {
+  type LessonDto,
+  type Level,
+  type WorkedExampleDto,
+  ACTIVITY,
+  L,
+  answerToTex,
+  createRng,
+  markLessonSeen,
+} from '@lemma/core';
 import { addEvent, award } from './activity';
-import { type Ctx, notFound } from './context';
+import { completeLessonAssignments } from './assignments';
+import { type Ctx, HttpError, notFound } from './context';
 import { loadStates, saveState, stateOf } from './learner';
 
 interface ProgressRow {
@@ -73,8 +83,59 @@ export function completeStep(ctx: Ctx, conceptId: string, stepIndex: number): Le
       if (finished && row.done === 0) {
         addEvent(ctx, { type: 'lesson_done', points: ACTIVITY.LESSON_DONE, skill: conceptId, ref: conceptId });
         award(ctx, 'first-lesson');
+        // A lesson the teacher recommended has now been read.
+        completeLessonAssignments(ctx, conceptId);
       }
     })();
   }
   return openLesson(ctx, conceptId);
+}
+
+/**
+ * A solved example of a skill: one of its own easiest problems with the whole solution
+ * shown, for reading before practising. Skills without an authored lesson are introduced
+ * this way. Nothing is logged as an attempt — reading a solution proves nothing — but the
+ * skill counts as introduced, exactly as after opening a lesson.
+ *
+ * `n` picks among the examples, so that "another one" shows a different problem.
+ */
+export function workedExample(ctx: Ctx, conceptId: string, n = 0): WorkedExampleDto {
+  const concept = getConcept(conceptId);
+  if (!concept) throw notFound('concept');
+  // A typed answer reads best as an example; fall back on whatever the skill has.
+  const generators = generatorsFor(conceptId).filter((generator) => !generator.deprecated);
+  const closed = Object.values(FORMAT_TAGS);
+  const typed = generators.filter(
+    (generator) => generator.kind !== 'debug' && !generator.tags?.some((tag) => closed.includes(tag)),
+  );
+  const pool = (typed.length > 0 ? typed : generators).sort((a, b) => Math.min(...a.levels) - Math.min(...b.levels));
+  if (pool.length === 0) throw new HttpError(422, 'no_problems', `there is no worked example for "${conceptId}"`);
+  const index = Math.max(0, Math.floor(n)) % (pool.length * 3);
+  const generator = pool[index % pool.length]!;
+  const level = Math.min(...generator.levels) as Level;
+  // Stable for a concept and a number: reloading the page shows the same example.
+  let seed = 7 + index * 7919;
+  for (const char of conceptId) seed = (seed * 31 + char.charCodeAt(0)) % 2_147_483_647;
+  const instance = generator.generate(createRng(seed || 1), level);
+
+  const now = ctx.now();
+  ctx.db.transaction(() => {
+    const seen = ctx.db.prepare('SELECT 1 FROM lesson_progress WHERE concept = ?').get(conceptId) !== undefined;
+    if (!seen && !getLesson(conceptId)) {
+      ctx.db
+        .prepare('INSERT INTO lesson_progress (concept, step, done, started_at, finished_at) VALUES (?, 1, 1, ?, ?)')
+        .run(conceptId, now, now);
+      saveState(ctx, markLessonSeen(stateOf(loadStates(ctx), conceptId), now));
+    }
+    completeLessonAssignments(ctx, conceptId);
+  })();
+
+  return {
+    concept: conceptId,
+    level,
+    prompt: instance.prompt,
+    figure: instance.figure ?? null,
+    solution: instance.solution,
+    answerTex: L(answerToTex(instance.answer, 'cs'), answerToTex(instance.answer, 'en')),
+  };
 }

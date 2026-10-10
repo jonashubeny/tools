@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { CONTENT_VERSION, EXAM_BLUEPRINTS, MILESTONES } from '@lemma/content';
+import { CONTENT_VERSION, MILESTONES, blueprintsOfGoal } from '@lemma/content';
 import {
+  type CreateAssignmentRequest,
   type MeDto,
   type StartRunRequest,
   ACTIVITY,
@@ -19,24 +20,28 @@ import type { Config } from './config';
 import { type Db, backupDatabase, schemaVersion } from './db';
 import { errorFields, log } from './log';
 import { achievedMilestones, addEvent, dayDetail } from './services/activity';
+import { cancelAssignment, clearFocus, createAssignment, listAssignments, setFocus } from './services/assignments';
 import {
   type Ctx,
   HttpError,
   badRequest,
   getSettings,
+  goalOf,
   isOnboarded,
   setOnboarded,
   today,
   updateSettings,
 } from './services/context';
+import { curriculum, listGoals } from './services/curriculum';
 import { dashboard } from './services/dashboard';
+import { getDiagnostic, listDiagnostics, skipDiagnostic } from './services/diagnostic';
 import { createExam, finishExam, getExam, listExams, refreshExamReport, saveExamAnswer } from './services/exam';
 import { fitOverview, missions, updateMission } from './services/fit';
 import { forgeOverview, refreshForge } from './services/forge';
 import { analytics, conceptDetail, errorSummary, graph } from './services/insights';
 import { replayAll } from './services/learner';
-import { completeStep, openLesson } from './services/lessons';
-import { getPlan, regeneratePlan, startBlock } from './services/plan';
+import { completeStep, openLesson, workedExample } from './services/lessons';
+import { getPlan, regeneratePlan, startAssignment, startBlock } from './services/plan';
 import {
   classifyError,
   getProblemRow,
@@ -45,10 +50,31 @@ import {
   problemDto,
   revealSolution,
   selfModel,
+  startDiagnostic,
   startRun,
   submitAnswer,
   takeHint,
 } from './services/practice';
+import { readinessFor } from './services/readiness';
+import {
+  addNote,
+  beginSession,
+  brief,
+  checkItem,
+  compare,
+  deleteNote,
+  finishSession,
+  getSession,
+  history,
+  listNotes,
+  recordItem,
+  sessionItemProblem,
+  sessionProblem,
+  setStudentGoal,
+  studentDetail,
+  studentSummary,
+  updateNote,
+} from './services/teach';
 import { registerTutorRoutes, tutorStatus } from './services/tutor';
 import type { Provider } from './services/tutor/types';
 
@@ -66,7 +92,7 @@ export interface AppDeps {
 }
 
 const StartRun = z.object({
-  context: z.enum(['blocked', 'lesson', 'challenge', 'mixed', 'drill']),
+  context: z.enum(['blocked', 'lesson', 'challenge', 'mixed', 'drill', 'adaptive']),
   concept: z.string().max(80).optional(),
   skills: z.array(z.string().max(80)).max(80).optional(),
   topic: z.number().int().min(1).max(99).optional(),
@@ -75,13 +101,17 @@ const StartRun = z.object({
   generator: z.string().max(120).optional(),
   level: z.number().int().min(1).max(5).optional(),
   replayOf: z.string().max(40).optional(),
-  count: z.number().int().min(1).max(20).optional(),
+  count: z.number().int().min(1).max(30).optional(),
 });
 
 type Env = {
   Bindings: { incoming?: { socket?: { remoteAddress?: string } } };
-  /** Whoever is asking; set for every route that requires a session. */
-  Variables: { learner: Learner };
+  /**
+   * `learner`: whoever is asking; set for every route that requires a session.
+   * `student`: the learner a teaching route is about; set only after the check that the
+   * one asking teaches them.
+   */
+  Variables: { learner: Learner; student: Learner };
 };
 
 const SECURITY_HEADERS: Record<string, string> = {
@@ -240,11 +270,15 @@ export function createApp(deps: AppDeps): Hono<Env> {
             forgejoUrl: '',
             forgejoUser: '',
             currentTopic: null,
+            examDay: null,
+            inSchool: [],
           },
       version: APP_VERSION,
       contentVersion: CONTENT_VERSION,
       today: today(ctx),
       tutor: learner?.tutor ? available : { enabled: false, provider: null, model: null },
+      teachers: learner && !learner.admin ? accounts.teachersOf(learner.username) : [],
+      students: learner ? accounts.studentsOf(learner.username).length : 0,
     };
     return c.json(me);
   });
@@ -328,7 +362,14 @@ export function createApp(deps: AppDeps): Hono<Env> {
 
   app.get('/api/dashboard', (c) => c.json(dashboard(ctxOf(c))));
   app.get('/api/graph', (c) => c.json(graph(ctxOf(c))));
+  app.get('/api/goals', (c) => c.json(listGoals()));
+  app.get('/api/curriculum', (c) => c.json(curriculum(ctxOf(c))));
+  app.get('/api/readiness', (c) => c.json(readinessFor(ctxOf(c))));
   app.get('/api/concepts/:id', (c) => c.json(conceptDetail(ctxOf(c), c.req.param('id'))));
+  app.get('/api/concepts/:id/example', (c) => {
+    const n = Number(c.req.query('n'));
+    return c.json(workedExample(ctxOf(c), c.req.param('id'), Number.isFinite(n) ? n : 0));
+  });
 
   app.get('/api/lessons/:id', (c) => c.json(openLesson(ctxOf(c), c.req.param('id'))));
   app.post('/api/lessons/:id/step', async (c) => {
@@ -344,6 +385,20 @@ export function createApp(deps: AppDeps): Hono<Env> {
   });
   app.get('/api/runs/:id', (c) => c.json(getRun(ctxOf(c), c.req.param('id'))));
   app.post('/api/runs/:id/next', (c) => c.json(nextInRun(ctxOf(c), c.req.param('id'))));
+
+  // The placement test of the learner's goal: started (or gone on with), declined, read afterwards.
+  app.post('/api/diagnostic/start', (c) => c.json(startDiagnostic(ctxOf(c))));
+  app.post('/api/diagnostic/skip', (c) => {
+    const ctx = ctxOf(c);
+    skipDiagnostic(ctx);
+    return c.json(regeneratePlan(ctx));
+  });
+  app.get('/api/diagnostics', (c) => c.json(listDiagnostics(ctxOf(c))));
+  app.get('/api/diagnostics/:id', (c) => c.json(getDiagnostic(ctxOf(c), c.req.param('id'))));
+
+  // Work the teacher set. A learner reads it and does it; only a teacher writes it.
+  app.get('/api/assignments', (c) => c.json(listAssignments(ctxOf(c))));
+  app.post('/api/assignments/:id/start', (c) => c.json(startAssignment(ctxOf(c), c.req.param('id'))));
 
   app.get('/api/problems/:id', (c) => c.json(problemDto(ctxOf(c), getProblemRow(ctxOf(c), c.req.param('id')))));
   app.post('/api/problems/:id/answer', async (c) => {
@@ -421,7 +476,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
 
   // ---- exams -------------------------------------------------------------------------
 
-  app.get('/api/exam-blueprints', (c) => c.json(EXAM_BLUEPRINTS));
+  app.get('/api/exam-blueprints', (c) => c.json(blueprintsOfGoal(goalOf(ctxOf(c)))));
   app.get('/api/exams', (c) => c.json(listExams(ctxOf(c))));
   app.post('/api/exams', async (c) => {
     const { blueprint, topics, concepts } = await body(c);
@@ -465,6 +520,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
   registerTutorRoutes(app as unknown as Hono, {
     ctxOf: ctxOf as never,
     allowed: ((c: Context<Env>) => c.get('learner').tutor) as never,
+    owner: ((c: Context<Env>) => c.get('learner').admin) as never,
     body: body as never,
     provider: deps.tutorProvider,
   });
@@ -488,6 +544,12 @@ export function createApp(deps: AppDeps): Hono<Env> {
       'mission_progress',
       'tutor_threads',
       'tutor_messages',
+      'assignments',
+      'focus',
+      'diagnostics',
+      // One's own notes and session records as a teacher; a learner's export never has another's.
+      'student_notes',
+      'teach_sessions',
     ];
     const dump: Record<string, unknown[]> = {};
     for (const table of tables) dump[table] = ctx.db.prepare(`SELECT * FROM ${table}`).all();
@@ -500,6 +562,150 @@ export function createApp(deps: AppDeps): Hono<Env> {
       tables: dump,
     });
   });
+
+  // ---- teaching ----------------------------------------------------------------------
+  //
+  // A teacher's view of the learners they teach. Everything about one learner lives under
+  // /api/teach/students/:student, and this is the gate in front of all of it: the account
+  // asking must teach that learner. The answer is the same for a learner who is somebody
+  // else's and for one who does not exist, so the route tells nothing about other accounts.
+  // Handlers take the learner from `c.get('student')` and from nowhere else.
+  const teachGate = async (c: Context<Env>, next: () => Promise<void>): Promise<void> => {
+    const name = c.req.param('student') ?? '';
+    if (!accounts.teaches(c.get('learner').username, name))
+      throw new HttpError(403, 'forbidden', 'you do not teach this learner');
+    c.set('student', await accounts.user(name));
+    await next();
+  };
+  app.use('/api/teach/students/:student', teachGate);
+  app.use('/api/teach/students/:student/*', teachGate);
+
+  const taught = async (teacher: Learner, names: readonly string[]): Promise<Learner[]> => {
+    const mine = new Set(accounts.studentsOf(teacher.username));
+    const out: Learner[] = [];
+    for (const name of names) {
+      if (!mine.has(name)) throw new HttpError(403, 'forbidden', 'you do not teach this learner');
+      out.push(await accounts.user(name));
+    }
+    return out;
+  };
+
+  app.get('/api/teach/students', async (c) => {
+    const teacher = c.get('learner');
+    const students = await taught(teacher, accounts.studentsOf(teacher.username));
+    return c.json(students.map(studentSummary));
+  });
+  app.get('/api/teach/compare', async (c) => {
+    const teacher = c.get('learner');
+    const asked = (c.req.query('students') ?? '')
+      .split(',')
+      .map((name) => name.trim())
+      .filter(Boolean);
+    const names =
+      asked.length > 0 ? [...new Set(asked)].slice(0, 6) : accounts.studentsOf(teacher.username).slice(0, 6);
+    return c.json(compare(await taught(teacher, names)));
+  });
+
+  app.get('/api/teach/students/:student', (c) => c.json(studentDetail(ctxOf(c), c.get('student'))));
+  app.get('/api/teach/students/:student/history', (c) => {
+    const before = Number(c.req.query('before'));
+    const limit = Number(c.req.query('limit'));
+    return c.json(
+      history(c.get('student').ctx, {
+        skill: c.req.query('skill') || undefined,
+        before: Number.isFinite(before) && before > 0 ? before : undefined,
+        limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
+        onlyMistakes: c.req.query('mistakes') === '1',
+      }),
+    );
+  });
+  app.get('/api/teach/students/:student/concepts/:id', (c) =>
+    c.json(conceptDetail(c.get('student').ctx, c.req.param('id'))),
+  );
+  app.get('/api/teach/students/:student/diagnostics/:id', (c) =>
+    c.json(getDiagnostic(c.get('student').ctx, c.req.param('id'))),
+  );
+  app.get('/api/teach/students/:student/exams/:id', (c) => {
+    const exam = c
+      .get('student')
+      .ctx.db.prepare('SELECT finished_at FROM exams WHERE id = ?')
+      .get(c.req.param('id')) as { finished_at: number | null } | undefined;
+    // Looking at a test must not end it: only finished ones are shown.
+    if (!exam || exam.finished_at === null) throw new HttpError(404, 'not_found', 'no finished test with that id');
+    return c.json(getExam(c.get('student').ctx, c.req.param('id')));
+  });
+
+  app.put('/api/teach/students/:student/goal', async (c) => {
+    const student = c.get('student');
+    setStudentGoal(student.ctx, await body(c));
+    return c.json(studentSummary(student));
+  });
+  app.post('/api/teach/students/:student/assignments', async (c) => {
+    const student = c.get('student');
+    const request = (await body(c)) as unknown as CreateAssignmentRequest;
+    const created = createAssignment(student.ctx, c.get('learner').username, request);
+    regeneratePlan(student.ctx);
+    return c.json(created);
+  });
+  app.delete('/api/teach/students/:student/assignments/:id', (c) => {
+    const student = c.get('student');
+    const cancelled = cancelAssignment(student.ctx, c.req.param('id'));
+    regeneratePlan(student.ctx);
+    return c.json(cancelled);
+  });
+  app.put('/api/teach/students/:student/focus/:skill', async (c) => {
+    const { kind } = await body(c);
+    if (kind !== 'difficulty' && kind !== 'covered') throw badRequest('kind must be "difficulty" or "covered"');
+    const student = c.get('student');
+    setFocus(student.ctx, c.get('learner').username, c.req.param('skill'), kind);
+    regeneratePlan(student.ctx);
+    return c.json({ ok: true });
+  });
+  app.delete('/api/teach/students/:student/focus/:skill', (c) => {
+    const student = c.get('student');
+    clearFocus(student.ctx, c.req.param('skill'));
+    regeneratePlan(student.ctx);
+    return c.json({ ok: true });
+  });
+
+  // Private notes: read from and written to the database of the one asking, never the learner's.
+  app.get('/api/teach/students/:student/notes', (c) => c.json(listNotes(ctxOf(c), c.get('student').username)));
+  app.post('/api/teach/students/:student/notes', async (c) => {
+    const { body: text, skill } = await body(c);
+    return c.json(addNote(ctxOf(c), c.get('student').username, { body: text, skill }));
+  });
+  app.put('/api/teach/students/:student/notes/:id', async (c) => {
+    const { body: text } = await body(c);
+    return c.json(updateNote(ctxOf(c), c.get('student').username, c.req.param('id'), text));
+  });
+  app.delete('/api/teach/students/:student/notes/:id', (c) => {
+    deleteNote(ctxOf(c), c.get('student').username, c.req.param('id'));
+    return c.json({ ok: true });
+  });
+
+  // Tutoring sessions: before (the brief), during (problems to show), after (what was found).
+  app.get('/api/teach/students/:student/brief', (c) => c.json(brief(ctxOf(c), c.get('student'))));
+  app.post('/api/teach/students/:student/sessions', (c) => c.json(beginSession(ctxOf(c), c.get('student'))));
+  app.get('/api/teach/students/:student/sessions/:id', (c) =>
+    c.json(getSession(ctxOf(c), c.get('student'), c.req.param('id'))),
+  );
+  app.post('/api/teach/students/:student/sessions/:id/problems', async (c) =>
+    c.json(sessionProblem(ctxOf(c), c.get('student'), c.req.param('id'), await body(c))),
+  );
+  app.get('/api/teach/students/:student/sessions/:id/items/:item', (c) =>
+    c.json(sessionItemProblem(ctxOf(c), c.get('student').username, c.req.param('id'), c.req.param('item'))),
+  );
+  app.put('/api/teach/students/:student/sessions/:id/items/:item', async (c) =>
+    c.json(recordItem(ctxOf(c), c.get('student'), c.req.param('id'), c.req.param('item'), await body(c))),
+  );
+  app.post('/api/teach/students/:student/sessions/:id/items/:item/check', async (c) => {
+    const { input } = await body(c);
+    if (typeof input !== 'string') throw badRequest('input is required');
+    return c.json(checkItem(ctxOf(c), c.get('student'), c.req.param('id'), c.req.param('item'), input));
+  });
+  app.post('/api/teach/students/:student/sessions/:id/finish', async (c) =>
+    c.json(finishSession(c.get('learner').username, ctxOf(c), c.get('student'), c.req.param('id'), await body(c))),
+  );
 
   // ---- administration ----------------------------------------------------------------
 
@@ -526,9 +732,15 @@ export function createApp(deps: AppDeps): Hono<Env> {
     return c.json(await accounts.create(username, password, tutor === true));
   });
   app.put('/api/admin/users/:username', async (c) => {
-    const { tutor } = await body(c);
-    if (typeof tutor !== 'boolean') throw badRequest('tutor must be true or false');
-    return c.json(accounts.setTutor(c.req.param('username'), tutor));
+    const { tutor, teachers } = await body(c);
+    if (tutor === undefined && teachers === undefined) throw badRequest('nothing to change');
+    if (tutor !== undefined && typeof tutor !== 'boolean') throw badRequest('tutor must be true or false');
+    if (teachers !== undefined && !(Array.isArray(teachers) && teachers.every((name) => typeof name === 'string')))
+      throw badRequest('teachers must be a list of account names');
+    const username = c.req.param('username');
+    let user = typeof tutor === 'boolean' ? accounts.setTutor(username, tutor) : undefined;
+    if (teachers !== undefined) user = accounts.setTeachers(username, teachers as string[]);
+    return c.json(user);
   });
   app.post('/api/admin/users/:username/password', async (c) => {
     const { password } = await body(c);

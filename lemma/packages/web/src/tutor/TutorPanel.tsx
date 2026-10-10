@@ -158,9 +158,14 @@ export function TutorPanel({ model }: { model: string | null }) {
                 'Během zkoušky nanečisto tutor mlčí. Po jejím skončení je zase k dispozici.',
                 'The tutor stays silent during a mock exam. It is available again once the exam is over.',
               )
-            : body?.error === 'tutor_disabled'
-              ? t('Tutor není nastaven.', 'The tutor is not configured.')
-              : (body?.message ?? t('Požadavek selhal.', 'The request failed.')),
+            : body?.error === 'placement_running'
+              ? t(
+                  'Během rozřazovacího testu tutor mlčí: test má zjistit, co zvládneš bez pomoci. Po jeho skončení je zase k dispozici.',
+                  'The tutor stays silent during a placement test: the test is there to find what you can do unaided. It is available again once the test is over.',
+                )
+              : body?.error === 'tutor_disabled'
+                ? t('Tutor není nastaven.', 'The tutor is not configured.')
+                : (body?.message ?? t('Požadavek selhal.', 'The request failed.')),
         );
         return;
       }

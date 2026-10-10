@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router';
 import { cn } from '../lib/cn';
 import { api } from './api';
 import { useT } from './i18n';
+import type { NavGroup } from './nav';
 import { LAB_NAMES } from './labels';
 import { useGraph } from './queries';
 
@@ -19,7 +20,18 @@ interface Command {
 const fold = (text: string): string => text.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
 /** Jump anywhere by typing: pages, concepts, Lab tools, and a few actions. */
-export function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function CommandPalette({
+  open,
+  onClose,
+  groups,
+  entrance,
+}: {
+  open: boolean;
+  onClose: () => void;
+  /** The pages the sidebar offers this learner: the palette offers the same ones. */
+  groups: NavGroup[];
+  entrance: boolean;
+}) {
   const t = useT();
   const navigate = useNavigate();
   const graph = useGraph();
@@ -46,29 +58,24 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       haystack: `${cs} ${en}`,
       run: go(path),
     });
-    const out: Command[] = [
-      page('/', 'Dnes', 'Today'),
-      page('/learn', 'Osnovy', 'Syllabus'),
-      page('/tree', 'Strom dovedností', 'Skill tree'),
-      page('/errors', 'Laboratoř chyb', 'Error Lab'),
-      page('/exams', 'Zkoušky nanečisto', 'Mock exams'),
-      page('/lab', 'Matematická laboratoř', 'Math Lab'),
-      page('/missions', 'Mise', 'Missions'),
-      page('/analytics', 'Analytika', 'Analytics'),
-      page('/fit', 'FIT VUT', 'FIT VUT'),
-      page('/settings', 'Nastavení', 'Settings'),
-      {
-        id: 'action:mixed',
-        title: t('Spustit smíšené opakování', 'Start a mixed review'),
-        hint: t('akce', 'action'),
-        haystack: 'smisene opakovani mixed review',
-        run: async () => {
-          const started = await api.post<{ run: { id: string } }>('/api/practice/start', { context: 'mixed' });
-          navigate(`/practice/${started.run.id}`);
-        },
+    const start = (id: string, cs: string, en: string, context: 'mixed' | 'adaptive'): Command => ({
+      id,
+      title: t(cs, en),
+      hint: t('akce', 'action'),
+      haystack: `${cs} ${en}`,
+      run: async () => {
+        const started = await api.post<{ run: { id: string } }>('/api/practice/start', { context });
+        navigate(`/practice/${started.run.id}`);
       },
+    });
+    const out: Command[] = [
+      ...groups.flatMap((group) => group.items.map((item) => page(item.to, item.label.cs, item.label.en))),
+      page('/settings', 'Nastavení', 'Settings'),
+      start('action:adaptive', 'Spustit adaptivní procvičování', 'Start adaptive practice', 'adaptive'),
+      start('action:mixed', 'Spustit smíšené opakování', 'Start a mixed review', 'mixed'),
     ];
-    for (const [tool, name] of Object.entries(LAB_NAMES)) {
+    // The Lab's tools are about functions: they belong to the school goal.
+    for (const [tool, name] of entrance ? [] : Object.entries(LAB_NAMES)) {
       out.push({
         id: `lab:${tool}`,
         title: t(name),
@@ -87,7 +94,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       });
     }
     return out;
-  }, [graph.data, navigate, t]);
+  }, [graph.data, navigate, t, groups, entrance]);
 
   const results = useMemo(() => {
     const words = fold(query).split(/\s+/).filter(Boolean);

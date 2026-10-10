@@ -227,4 +227,91 @@ ALTER TABLE sessions ADD COLUMN username TEXT REFERENCES users (username) ON DEL
 CREATE INDEX sessions_username ON sessions (username);
 `,
   },
+  {
+    id: 3,
+    name: 'goals, selection, teaching',
+    // As before, every database gets every table and uses the ones that are its business:
+    //   the main database   teaching (who may see whose work)
+    //   each learner's      assignments, focus, diagnostics, and the new columns of problems
+    //   a teacher's own     student_notes, teach_sessions — a teacher's notes live with the
+    //                       teacher, so that no request made by a student can reach them
+    sql: `
+-- How likely a right answer was by guessing (1/5 for five options, 0 for a typed answer).
+-- NULL on rows written before this column existed; filled from the snapshot on the next
+-- rebuild of the learner model.
+ALTER TABLE problems ADD COLUMN chance REAL;
+-- Why the problem was asked, where a selection was made: the purpose, and the reason as JSON.
+ALTER TABLE problems ADD COLUMN purpose TEXT;
+ALTER TABLE problems ADD COLUMN reason TEXT;
+
+-- 'admin' is the administrator, who is not in users.
+CREATE TABLE teaching (
+  teacher    TEXT    NOT NULL,
+  student    TEXT    NOT NULL REFERENCES users (username) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (teacher, student)
+);
+CREATE INDEX teaching_student ON teaching (student);
+
+-- Work set by a teacher, kept with the learner it is for: the plan reads it from here.
+CREATE TABLE assignments (
+  id         TEXT    PRIMARY KEY,
+  kind       TEXT    NOT NULL CHECK (kind IN ('practice', 'review', 'remediation', 'lesson', 'test')),
+  skills     TEXT    NOT NULL DEFAULT '[]',
+  note       TEXT    NOT NULL DEFAULT '',
+  minutes    INTEGER NOT NULL DEFAULT 10,
+  count      INTEGER,
+  due_day    TEXT,
+  created_by TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  status     TEXT    NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'done', 'cancelled')),
+  done_at    INTEGER,
+  run_id     TEXT,
+  exam_id    TEXT
+);
+CREATE INDEX assignments_status ON assignments (status, created_at);
+
+-- What a teacher noted about a skill in a session. It steers what is selected for a
+-- while and never changes a mastery level: that takes the learner's own work.
+CREATE TABLE focus (
+  skill      TEXT    PRIMARY KEY,
+  kind       TEXT    NOT NULL CHECK (kind IN ('difficulty', 'covered')),
+  set_by     TEXT    NOT NULL,
+  set_at     INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+
+-- A placement test. Its problems are ordinary rows of the log (context 'diagnostic');
+-- this records which run it was and what it concluded.
+CREATE TABLE diagnostics (
+  id          TEXT    PRIMARY KEY,
+  goal        TEXT    NOT NULL,
+  run_id      TEXT    NOT NULL,
+  started_at  INTEGER NOT NULL,
+  finished_at INTEGER,
+  report      TEXT
+);
+
+CREATE TABLE student_notes (
+  id         TEXT    PRIMARY KEY,
+  student    TEXT    NOT NULL,
+  skill      TEXT,
+  body       TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX student_notes_student ON student_notes (student, created_at);
+
+CREATE TABLE teach_sessions (
+  id          TEXT    PRIMARY KEY,
+  student     TEXT    NOT NULL,
+  started_at  INTEGER NOT NULL,
+  finished_at INTEGER,
+  brief       TEXT    NOT NULL DEFAULT '{}',
+  items       TEXT    NOT NULL DEFAULT '[]',
+  wrap        TEXT
+);
+CREATE INDEX teach_sessions_student ON teach_sessions (student, started_at);
+`,
+  },
 ];

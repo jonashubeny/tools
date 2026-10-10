@@ -117,7 +117,7 @@ export const MILESTONES: MilestoneDef[] = [
   {
     id: 'reviews-25',
     title: L('25 úspěšných opakování', '25 reviews passed'),
-    description: L('Dovednosti, které sis udržel i po čase.', 'Skills you kept after time had passed.'),
+    description: L('Dovednosti, které vydržely i po čase.', 'Skills you kept after time had passed.'),
     weight: 5,
   },
   {

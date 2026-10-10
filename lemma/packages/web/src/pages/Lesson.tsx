@@ -116,7 +116,7 @@ function Player({ lesson }: { lesson: LessonDto }) {
           </div>
           <p className="mt-2 text-ink-2">
             {t(
-              'Číst a rozumět je první půlka. Druhá je udělat to sám, bez nápovědy — a pak znovu za pár dní, až to trochu vyprchá.',
+              'Číst a rozumět je první půlka. Druhá je udělat to bez pomoci a bez nápovědy — a pak znovu za pár dní, až to trochu vyprchá.',
               'Reading and understanding is the first half. The second is doing it alone, without hints — and then again in a few days, once it has faded a little.',
             )}
           </p>

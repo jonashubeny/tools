@@ -1,6 +1,6 @@
 import { Check } from 'lucide-react';
 import { useT } from '../app/i18n';
-import { CONTEXT_NAMES } from '../app/labels';
+import { AREA_NAMES, CONTEXT_NAMES } from '../app/labels';
 import { type MilestoneDto, useAnalytics, useMilestones } from '../app/queries';
 import { cn } from '../lib/cn';
 import { duration, formatDate, formatDayShort, num, pct } from '../lib/format';
@@ -144,7 +144,10 @@ export function Analytics() {
             </Card>
             <Card className="p-5">
               <LineChart
-                title={t('Poznáš typ úlohy sám?', 'Do you recognise the problem type yourself?')}
+                title={t(
+                  'Poznáš typ úlohy bez nápovědy tématu?',
+                  'Do you recognise the problem type without being told the topic?',
+                )}
                 subtitle={t(
                   'Podíl samostatně vyřešených: když téma znáš předem, a když je úloha ve směsi bez označení',
                   'Share solved unaided: when the topic is announced, and when the problem comes unlabelled in a mix',
@@ -229,41 +232,103 @@ export function Analytics() {
           </div>
 
           <div className="grid gap-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+            {data.topics.length > 0 ? (
+              <Card className="p-5">
+                <SectionLabel>{t('Kapitoly osnov', 'Syllabus chapters')}</SectionLabel>
+                <div className="mt-3 overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="text-left text-xs text-ink-3">
+                      <tr>
+                        <th className="pb-1.5 font-normal">{t('Kapitola', 'Chapter')}</th>
+                        <th className="w-36 pb-1.5 font-normal">{t('Postup', 'Progress')}</th>
+                        <th className="pb-1.5 text-right font-normal">{t('Úloh', 'Problems')}</th>
+                        <th className="pb-1.5 text-right font-normal">{t('Úspěšnost', 'Accuracy')}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.topics.map((topic) => (
+                        <tr
+                          key={topic.topic}
+                          className={cn('border-t border-border', topic.attempts === 0 && 'text-ink-3')}
+                        >
+                          <td className="py-1.5 pr-3">
+                            <span className="font-mono text-ink-3">{topic.topic}.</span> {t(topic.title)}
+                          </td>
+                          <td className="py-1.5 pr-3">
+                            <div className="flex items-center gap-2">
+                              <Meter value={topic.progress} label={t('Postup', 'Progress')} />
+                              <span className="w-9 shrink-0 text-right font-mono text-xs">
+                                {pct(topic.progress, t.locale)}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="py-1.5 text-right">{topic.attempts}</td>
+                          <td className="py-1.5 text-right">{pct(topic.accuracy, t.locale)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            ) : null}
             <Card className="p-5">
-              <SectionLabel>{t('Kapitoly osnov', 'Syllabus chapters')}</SectionLabel>
+              <SectionLabel>{t('Oblasti matematiky', 'Areas of mathematics')}</SectionLabel>
               <div className="mt-3 overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="text-left text-xs text-ink-3">
                     <tr>
-                      <th className="pb-1.5 font-normal">{t('Kapitola', 'Chapter')}</th>
+                      <th className="pb-1.5 font-normal">{t('Oblast', 'Area')}</th>
                       <th className="w-36 pb-1.5 font-normal">{t('Postup', 'Progress')}</th>
                       <th className="pb-1.5 text-right font-normal">{t('Úloh', 'Problems')}</th>
                       <th className="pb-1.5 text-right font-normal">{t('Úspěšnost', 'Accuracy')}</th>
+                      <th className="pb-1.5 text-right font-normal">{t('Napoprvé', 'First try')}</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {data.topics.map((topic) => (
-                      <tr
-                        key={topic.topic}
-                        className={cn('border-t border-border', topic.attempts === 0 && 'text-ink-3')}
-                      >
+                    {data.areas.map((area) => (
+                      <tr key={area.area} className={cn('border-t border-border', area.attempts === 0 && 'text-ink-3')}>
                         <td className="py-1.5 pr-3">
-                          <span className="font-mono text-ink-3">{topic.topic}.</span> {t(topic.title)}
+                          {t(AREA_NAMES[area.area])} <span className="font-mono text-xs text-ink-3">{area.skills}</span>
                         </td>
                         <td className="py-1.5 pr-3">
                           <div className="flex items-center gap-2">
-                            <Meter value={topic.progress} label={t('Postup', 'Progress')} />
+                            <Meter value={area.progress} label={t('Postup', 'Progress')} />
                             <span className="w-9 shrink-0 text-right font-mono text-xs">
-                              {pct(topic.progress, t.locale)}
+                              {pct(area.progress, t.locale)}
                             </span>
                           </div>
                         </td>
-                        <td className="py-1.5 text-right">{topic.attempts}</td>
-                        <td className="py-1.5 text-right">{pct(topic.accuracy, t.locale)}</td>
+                        <td className="py-1.5 text-right">{area.attempts}</td>
+                        <td className="py-1.5 text-right">{pct(area.accuracy, t.locale)}</td>
+                        <td className="py-1.5 text-right">{pct(area.firstTry, t.locale)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+              </div>
+              <div className="mt-4 border-t border-border pt-3 text-[13px] text-ink-2">
+                <div className="mono-label mb-1.5">{t('Na čas a bez času', 'Timed and untimed')}</div>
+                {(
+                  [
+                    [t('Procvičování (bez času)', 'Practice (untimed)'), data.timed.untimed],
+                    [t('Testy nanečisto (na čas)', 'Practice tests (timed)'), data.timed.timed],
+                  ] as const
+                ).map(([label, figures]) => (
+                  <div key={label} className="flex flex-wrap justify-between gap-x-4">
+                    <span>{label}</span>
+                    <span className="text-ink-3">
+                      {figures.problems === 0
+                        ? t('zatím nic', 'nothing yet')
+                        : `${figures.problems} ${t('úloh', 'problems')} · ${pct(figures.accuracy, t.locale)} ${t('vyřešeno', 'solved')} · ${pct(figures.firstTry, t.locale)} ${t('napoprvé', 'first try')}`}
+                    </span>
+                  </div>
+                ))}
+                <p className="mt-1.5 text-xs text-ink-3">
+                  {t(
+                    'Jsou to dvě různá měření: při procvičování jsou nápovědy a víc pokusů, v testu jeden pokus a čas. Nesčítají se.',
+                    'These are two different measurements: practice has hints and several tries, a test one try and a clock. They are not added together.',
+                  )}
+                </p>
               </div>
             </Card>
 

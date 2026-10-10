@@ -1,5 +1,6 @@
 import {
   type ForgeDto,
+  type GoalId,
   type GradeScale,
   type MeDto,
   type PauseDto,
@@ -11,12 +12,13 @@ import {
   USERNAME_PATTERN,
 } from '@lemma/core';
 import { useQueryClient } from '@tanstack/react-query';
-import { Download, KeyRound, RefreshCw, Trash2 } from 'lucide-react';
+import { Download, KeyRound, RefreshCw, Trash2, X } from 'lucide-react';
 import { type FormEvent, type ReactNode, useEffect, useState } from 'react';
 import { useLocation } from 'react-router';
 import { ApiFailure, api } from '../app/api';
 import { useT } from '../app/i18n';
-import { useForge, useGraph, useMe, useRefresh, useUsers } from '../app/queries';
+import { useEntrance } from '../app/nav';
+import { useForge, useGoals, useGraph, useMe, useRefresh, useUsers } from '../app/queries';
 import { cn } from '../lib/cn';
 import { formatDateTime, formatDay } from '../lib/format';
 import {
@@ -48,6 +50,7 @@ export function Settings() {
     if (me.data && location.hash) document.getElementById(location.hash.slice(1))?.scrollIntoView({ block: 'start' });
   }, [me.data, location.hash]);
 
+  const entrance = useEntrance(me.data?.settings.goal);
   if (!me.data) return <Loading />;
   const settings = me.data.settings;
   const admin = me.data.account?.admin ?? false;
@@ -76,10 +79,12 @@ export function Settings() {
       )}
       <div className="space-y-5">
         <Profile settings={settings} save={save} />
-        <Learning settings={settings} save={save} />
-        <Tests settings={settings} save={save} today={me.data.today} />
+        <Goal settings={settings} save={save} teachers={me.data.teachers} />
+        <Learning settings={settings} save={save} entrance={entrance} />
+        {/* Tests by chapter and school grades belong to the school syllabus. */}
+        {!entrance && <Tests settings={settings} save={save} today={me.data.today} />}
         <Pauses settings={settings} save={save} />
-        <Grades settings={settings} save={save} />
+        {!entrance && <Grades settings={settings} save={save} />}
         <Integrations settings={settings} save={save} admin={admin} />
         <Tutor me={me.data} />
         {me.data.authRequired && <Password />}
@@ -157,29 +162,165 @@ function Profile({ settings, save }: { settings: SettingsDto; save: Save }) {
   );
 }
 
-function Learning({ settings, save }: { settings: SettingsDto; save: Save }) {
+/** What the learner is preparing for, when, and who can see how it goes. */
+function Goal({ settings, save, teachers }: { settings: SettingsDto; save: Save; teachers: string[] }) {
   const t = useT();
+  const goals = useGoals();
   const graph = useGraph();
+  const chosen = goals.data?.find((goal) => goal.id === settings.goal);
+  const entrance = chosen?.kind === 'entrance';
+  const [examDay, setExamDay] = useState(settings.examDay ?? '');
+  useEffect(() => setExamDay(settings.examDay ?? ''), [settings.examDay]);
+  const skills = (graph.data?.skills ?? []).filter((skill) => skill.hasProblems);
+  const titleOf = (id: string): string => {
+    const skill = skills.find((entry) => entry.id === id);
+    return skill ? t(skill.title) : id;
+  };
   return (
-    <Panel title={t('Učení', 'Learning')}>
-      <Field
-        label={t('Kapitola, kterou teď ve škole probíráte', 'The chapter your class is on now')}
-        hint={t('Podle ní se vybírá nová látka v denním plánu.', 'New material in the daily plan is chosen from it.')}
-      >
-        <Select
-          value={settings.currentTopic ?? ''}
-          onChange={(event) =>
-            void save({ currentTopic: event.target.value === '' ? null : Number(event.target.value) })
-          }
-        >
-          <option value="">{t('— nenastaveno —', '— not set —')}</option>
-          {(graph.data?.topics ?? []).map((topic) => (
-            <option key={topic.n} value={topic.n}>
-              {topic.n}. {t(topic.title)}
+    <Panel
+      id="goal"
+      title={t('Cíl', 'Goal')}
+      lead={t(
+        'Podle cíle se řídí všechno ostatní: které dovednosti aplikace nabízí, jak je váží a z čeho skládá plán. Záznam úloh se změnou cíle nemaže.',
+        'Everything else follows from the goal: which skills the app offers, how it weighs them, and what the plan is made of. Changing the goal erases nothing of the log.',
+      )}
+    >
+      <Field label={t('Na co se připravuji', 'What I am preparing for')}>
+        <Select value={settings.goal} onChange={(event) => void save({ goal: event.target.value as GoalId })}>
+          {(goals.data ?? []).map((goal) => (
+            <option key={goal.id} value={goal.id}>
+              {t(goal.title)}
             </option>
           ))}
         </Select>
       </Field>
+      {entrance && chosen?.facts && (
+        <>
+          <Field
+            label={t('Termín zkoušky', 'Examination date')}
+            hint={t(
+              `Termíny níže jsou z oficiálního webu, načteno ${formatDay(chosen.facts.retrievedOn, 'cs')}. Před zkouškou si je ověř.`,
+              `The dates below are from the official site, read on ${formatDay(chosen.facts.retrievedOn, 'en')}. Check them before the examination.`,
+            )}
+          >
+            <span className="flex flex-wrap items-center gap-2">
+              <TextInput
+                type="date"
+                value={examDay}
+                onChange={(event) => setExamDay(event.target.value)}
+                onBlur={() =>
+                  examDay !== (settings.examDay ?? '') && void save({ examDay: examDay === '' ? null : examDay })
+                }
+                className="w-44"
+              />
+              {chosen.facts.terms.map((term) => (
+                <button
+                  key={term.day + term.label.cs}
+                  type="button"
+                  aria-pressed={settings.examDay === term.day}
+                  onClick={() => void save({ examDay: term.day })}
+                  className={cn(
+                    'h-7 rounded-md border px-2 text-xs',
+                    settings.examDay === term.day
+                      ? 'border-accent bg-accent-wash text-ink'
+                      : 'border-border-strong bg-surface-2 text-ink-2 hover:bg-surface-3',
+                  )}
+                >
+                  {t(term.label)} · {formatDay(term.day, t.locale)}
+                </button>
+              ))}
+            </span>
+          </Field>
+          <Field
+            label={t('Co teď probíráte ve škole', 'What your class is on now')}
+            hint={t(
+              'Nepovinné. Co je tu vybrané, dostává v plánu přednost.',
+              'Optional. What is chosen here is given precedence in the plan.',
+            )}
+          >
+            <Select
+              value=""
+              onChange={(event) =>
+                event.target.value !== '' && void save({ inSchool: [...settings.inSchool, event.target.value] })
+              }
+            >
+              <option value="">{t('— přidat dovednost —', '— add a skill —')}</option>
+              {skills
+                .filter((skill) => !settings.inSchool.includes(skill.id))
+                .map((skill) => (
+                  <option key={skill.id} value={skill.id}>
+                    {t(skill.title)}
+                  </option>
+                ))}
+            </Select>
+            {settings.inSchool.length > 0 && (
+              <span className="mt-2 flex flex-wrap gap-1.5">
+                {settings.inSchool.map((id) => (
+                  <span
+                    key={id}
+                    className="inline-flex h-7 items-center gap-1 rounded-md border border-border-strong bg-surface-2 pr-1 pl-2 text-xs"
+                  >
+                    {titleOf(id)}
+                    <button
+                      type="button"
+                      aria-label={`${t('Odebrat', 'Remove')}: ${titleOf(id)}`}
+                      onClick={() => void save({ inSchool: settings.inSchool.filter((entry) => entry !== id) })}
+                      className="grid h-5 w-5 place-items-center rounded text-ink-3 hover:bg-surface-3 hover:text-ink"
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+              </span>
+            )}
+          </Field>
+        </>
+      )}
+      <Notice tone="info" title={t('Kdo vidí tvou práci', 'Who can see your work')}>
+        {teachers.length > 0 ? (
+          <>
+            <span className="font-mono text-ink">{teachers.join(', ')}</span>{' '}
+            {t(
+              '— vidí tvé úlohy, odpovědi, chyby a výsledky testů, může ti zadávat práci a nastavit cíl a termín zkoušky. Nastavuje to správce.',
+              '— can see your problems, answers, errors and test results, can set work for you, and can set the goal and the examination date. The administrator decides this.',
+            )}
+          </>
+        ) : (
+          t(
+            'Nikdo jiný než ty. Učitele může účtu přiřadit jen správce a tady by to bylo vidět.',
+            'Nobody but you. Only the administrator can give an account a teacher, and it would show here.',
+          )
+        )}
+      </Notice>
+    </Panel>
+  );
+}
+
+function Learning({ settings, save, entrance }: { settings: SettingsDto; save: Save; entrance: boolean }) {
+  const t = useT();
+  const graph = useGraph();
+  return (
+    <Panel title={t('Učení', 'Learning')}>
+      {!entrance && (
+        <Field
+          label={t('Kapitola, kterou teď ve škole probíráte', 'The chapter your class is on now')}
+          hint={t('Podle ní se vybírá nová látka v denním plánu.', 'New material in the daily plan is chosen from it.')}
+        >
+          <Select
+            value={settings.currentTopic ?? ''}
+            onChange={(event) =>
+              void save({ currentTopic: event.target.value === '' ? null : Number(event.target.value) })
+            }
+          >
+            <option value="">{t('— nenastaveno —', '— not set —')}</option>
+            {(graph.data?.topics ?? []).map((topic) => (
+              <option key={topic.n} value={topic.n}>
+                {topic.n}. {t(topic.title)}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      )}
       <Row label={t('Obvyklá délka sezení', 'Usual session length')}>
         <Segmented
           label={t('Délka sezení', 'Session length')}
@@ -789,10 +930,10 @@ function Users({ tutorConfigured }: { tutorConfigured: boolean }) {
                 <span className="min-w-0 flex-1">
                   <span className="font-mono text-sm font-medium">{user.username}</span>
                   <span className="block text-xs text-ink-3">
-                    {t('založen', 'created')} {formatDateTime(user.createdAt, t.locale)}
+                    {t('účet založen', 'created')} {formatDateTime(user.createdAt, t.locale)}
                     {' · '}
                     {user.lastSeenAt === null
-                      ? t('ještě se nepřihlásil', 'has not signed in yet')
+                      ? t('zatím bez přihlášení', 'has not signed in yet')
                       : `${t('naposledy', 'last seen')} ${formatDateTime(user.lastSeenAt, t.locale)}`}
                   </span>
                 </span>
@@ -830,6 +971,48 @@ function Users({ tutorConfigured }: { tutorConfigured: boolean }) {
                   <Trash2 size={15} />
                 </IconButton>
               </div>
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-xs text-ink-3">
+                <span
+                  title={t(
+                    'Učitel vidí práci žáka, zadává mu úlohy a nastavuje cíl. Žák to vidí ve svém Nastavení.',
+                    'A teacher sees the learner’s work, sets work and sets the goal. The learner sees this in their Settings.',
+                  )}
+                >
+                  {t('Učitelé:', 'Teachers:')}
+                </span>
+                {[
+                  ADMIN_USERNAME,
+                  ...users.data.map((other) => other.username).filter((name) => name !== user.username),
+                ].map((name) => {
+                  const on = user.teachers.includes(name);
+                  return (
+                    <button
+                      key={name}
+                      type="button"
+                      aria-pressed={on}
+                      disabled={busy}
+                      onClick={() =>
+                        void act(
+                          () =>
+                            api.put(urlOf(user), {
+                              teachers: on ? user.teachers.filter((entry) => entry !== name) : [...user.teachers, name],
+                            }),
+                          null,
+                        )
+                      }
+                      className={cn(
+                        'h-6 rounded-md border px-1.5 font-mono',
+                        on
+                          ? 'border-accent bg-accent-wash text-ink'
+                          : 'border-border bg-surface-1 text-ink-3 hover:bg-surface-2',
+                      )}
+                    >
+                      {name}
+                    </button>
+                  );
+                })}
+                {user.teachers.length === 0 && <span>{t('nikdo', 'nobody')}</span>}
+              </div>
               {open?.username === user.username && open.action === 'password' && (
                 <form
                   className="flex flex-wrap items-end gap-3"
@@ -838,8 +1021,8 @@ function Users({ tutorConfigured }: { tutorConfigured: boolean }) {
                     void act(
                       () => api.post(`${urlOf(user)}/password`, { password: nextPassword }),
                       t(
-                        `Heslo pro ${user.username} je nastavené; všude je odhlášený.`,
-                        `The password for ${user.username} is set; they are signed out everywhere.`,
+                        `Heslo pro ${user.username} je nastavené; účet je všude odhlášen.`,
+                        `The password for ${user.username} is set; the account is signed out everywhere.`,
                       ),
                     );
                   }}
@@ -863,7 +1046,7 @@ function Users({ tutorConfigured }: { tutorConfigured: boolean }) {
                 <div className="flex flex-wrap items-center gap-3 text-sm">
                   <span className="min-w-0 flex-1 text-ink-2">
                     {t(
-                      `Smazat účet ${user.username}? Hned ho to odhlásí a už se nepřihlásí. Jeho data se nemažou: zůstanou na serveru ve složce users/.deleted.`,
+                      `Smazat účet ${user.username}? Účet se hned odhlásí a přihlásit se už nepůjde. Data se nemažou: zůstanou na serveru ve složce users/.deleted.`,
                       `Remove the account ${user.username}? It is signed out at once and cannot sign in again. Its data is not erased: it stays on the server in users/.deleted.`,
                     )}
                   </span>

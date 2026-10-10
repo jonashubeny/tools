@@ -7,6 +7,7 @@ import { Today } from '../pages/Today';
 import { ErrorNote, Loading } from '../ui';
 import { onUnauthenticated } from './api';
 import { I18nProvider, initialLocale, rememberLocale } from './i18n';
+import { useEntrance } from './nav';
 import { useMe } from './queries';
 import { Shell } from './Shell';
 import { applyTheme } from './theme';
@@ -24,6 +25,12 @@ const Fit = lazy(() => import('../pages/Fit').then((m) => ({ default: m.Fit })))
 const Missions = lazy(() => import('../pages/Missions').then((m) => ({ default: m.Missions })));
 const Analytics = lazy(() => import('../pages/Analytics').then((m) => ({ default: m.Analytics })));
 const Settings = lazy(() => import('../pages/Settings').then((m) => ({ default: m.Settings })));
+const CurriculumMap = lazy(() => import('../pages/Map').then((m) => ({ default: m.CurriculumMap })));
+const Diagnostic = lazy(() => import('../pages/Diagnostic').then((m) => ({ default: m.Diagnostic })));
+const Readiness = lazy(() => import('../pages/Readiness').then((m) => ({ default: m.Readiness })));
+const Teach = lazy(() => import('../pages/Teach').then((m) => ({ default: m.Teach })));
+const Student = lazy(() => import('../pages/Student').then((m) => ({ default: m.Student })));
+const TeachSession = lazy(() => import('../pages/TeachSession').then((m) => ({ default: m.TeachSession })));
 
 export function App() {
   const me = useMe();
@@ -32,6 +39,8 @@ export function App() {
   // Any request that comes back 401 means the session ended: ask who we are again.
   useEffect(() => onUnauthenticated(() => void client.invalidateQueries({ queryKey: ['me'] })), [client]);
 
+  // The syllabus pages describe the school goal; with an examination goal they lead to the map.
+  const entrance = useEntrance(me.data?.authenticated ? me.data.settings.goal : undefined);
   const locale = me.data?.authenticated ? me.data.settings.locale : initialLocale();
   const theme = me.data?.authenticated ? me.data.settings.theme : null;
   useEffect(() => {
@@ -58,17 +67,23 @@ export function App() {
           <Suspense fallback={<Loading />}>
             <Routes>
               <Route path="/" element={<Today />} />
-              <Route path="/learn" element={<Learn />} />
+              <Route path="/learn" element={entrance ? <Navigate to="/map" replace /> : <Learn />} />
               <Route path="/concept/:id" element={<Concept />} />
               <Route path="/lesson/:id" element={<Lesson />} />
               <Route path="/practice/:runId" element={<Practice />} />
-              <Route path="/tree" element={<Tree />} />
+              <Route path="/tree" element={entrance ? <Navigate to="/map" replace /> : <Tree />} />
+              <Route path="/map" element={<CurriculumMap />} />
+              <Route path="/diagnostic/:id" element={<Diagnostic />} />
+              <Route path="/readiness" element={entrance ? <Readiness /> : <Navigate to="/" replace />} />
+              <Route path="/teach" element={<Teach />} />
+              <Route path="/teach/:student" element={<Student />} />
+              <Route path="/teach/:student/session/:id" element={<TeachSession />} />
               <Route path="/errors" element={<Errors />} />
               <Route path="/exams" element={<Exams />} />
               <Route path="/exams/:id" element={<Exam />} />
               <Route path="/lab" element={<Lab />} />
               <Route path="/lab/:tool" element={<Lab />} />
-              <Route path="/fit" element={<Fit />} />
+              <Route path="/fit" element={entrance ? <Navigate to="/readiness" replace /> : <Fit />} />
               <Route path="/missions" element={<Missions />} />
               <Route path="/analytics" element={<Analytics />} />
               <Route path="/settings" element={<Settings />} />

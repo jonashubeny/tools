@@ -113,6 +113,38 @@ export const HINT = {
   brackets: L('Záporné číslo dosazuj vždy v závorce.', 'Always substitute a negative number inside brackets.'),
 };
 
+/**
+ * The Czech form of a counted word: `plural(5, 'koruna', 'koruny', 'korun')`. One takes the
+ * singular, two to four the nominative plural, five and more the genitive plural — and a
+ * verb or an adjective beside the noun changes with it: `plural(n, 'je', 'jsou', 'je')`.
+ */
+export function plural(count: number, one: string, few: string, many: string): string {
+  const n = Math.abs(count);
+  if (n === 1) return one;
+  if (n >= 2 && n <= 4) return few;
+  return many;
+}
+
+/**
+ * "The first few" in Czech, where the adjective follows the numeral as well: "první korálek",
+ * "první 3 korálky", "prvních 5 korálků".
+ */
+export function firstFew(count: number, one: string, few: string, many: string): string {
+  if (count === 1) return `první ${one}`;
+  return count >= 2 && count <= 4 ? `první ${count} ${few}` : `prvních ${count} ${many}`;
+}
+
+/**
+ * The Czech preposition "z" in front of a number written in digits: "ze 3", "z 5",
+ * "ze 17", "z 20". It follows how the number is read aloud (ze tří, z pěti, ze sedmnácti).
+ */
+export function zPrep(count: number): 'z' | 'ze' {
+  const n = Math.abs(Math.round(count));
+  if (n >= 100) return [1, 2, 3, 4, 6, 7].includes(Math.floor(n / 100) % 10) ? 'ze' : 'z';
+  if (n >= 20) return [3, 4, 6, 7].includes(Math.floor(n / 10)) ? 'ze' : 'z';
+  return [2, 3, 4, 6, 7, 13, 14, 16, 17].includes(n) ? 'ze' : 'z';
+}
+
 /** Wrap a number for display inside a product or power: (-3) but 3. */
 export const par = (n: number): string => (n < 0 ? `(${n})` : `${n}`);
 

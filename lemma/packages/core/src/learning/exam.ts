@@ -20,6 +20,15 @@ export interface ExamItemResult {
   predicted: number;
   /** Inferred or confirmed error type for wrong answers. */
   errorType?: ErrorType | null;
+  /** Scored together with the other items of the same bundle (`ExamScoring.bundles`). */
+  bundle?: string;
+}
+
+/** How an examination scores: the grade scale, and bundles of sub-questions marked together. */
+export interface ExamScoring {
+  scale?: GradeScale | null;
+  /** Points of a bundle by the number of its items answered correctly: [0, 0, 2, 4]. */
+  bundles?: Readonly<Record<string, readonly number[]>>;
 }
 
 export interface SkillBreakdown {
@@ -78,13 +87,45 @@ export function gradeFor(percent: number, scale: GradeScale | null): number | nu
   return 5;
 }
 
+/**
+ * What each item is worth and earned. A loose item is all or nothing. The items of a
+ * bundle share its points: the bundle's score depends on how many of them are right
+ * (three true/false statements: 4, 2, 0, 0 points), and is spread over the right ones.
+ */
+export function itemPoints(
+  results: readonly ExamItemResult[],
+  bundles: Readonly<Record<string, readonly number[]>>,
+): { max: number; earned: number }[] {
+  const groups = new Map<string, { size: number; right: number }>();
+  for (const r of results) {
+    if (!r.bundle || !bundles[r.bundle]) continue;
+    const group = groups.get(r.bundle) ?? { size: 0, right: 0 };
+    group.size++;
+    if (r.correct) group.right++;
+    groups.set(r.bundle, group);
+  }
+  return results.map((r) => {
+    const table = r.bundle ? bundles[r.bundle] : undefined;
+    const group = r.bundle ? groups.get(r.bundle) : undefined;
+    if (!table || !group) return { max: r.points, earned: r.correct ? r.points : 0 };
+    const top = table[table.length - 1] ?? 0;
+    const scored = table[Math.min(group.right, table.length - 1)] ?? 0;
+    return { max: top / group.size, earned: r.correct && group.right > 0 ? scored / group.right : 0 };
+  });
+}
+
 export function examReport(
   results: readonly ExamItemResult[],
   limitSeconds: number,
-  scale: GradeScale | null = DEFAULT_GRADE_SCALE,
+  scoring: GradeScale | null | ExamScoring = DEFAULT_GRADE_SCALE,
 ): ExamReport {
-  const maxPoints = results.reduce((sum, r) => sum + r.points, 0);
-  const points = results.reduce((sum, r) => sum + (r.correct ? r.points : 0), 0);
+  const options: ExamScoring =
+    scoring === null || Array.isArray(scoring) ? { scale: scoring as GradeScale | null } : (scoring as ExamScoring);
+  const scale = options.scale === undefined ? DEFAULT_GRADE_SCALE : options.scale;
+  const worth = itemPoints(results, options.bundles ?? {});
+  const round = (value: number): number => Math.round(value * 100) / 100;
+  const maxPoints = round(worth.reduce((sum, w) => sum + w.max, 0));
+  const points = round(worth.reduce((sum, w) => sum + w.earned, 0));
   const percent = maxPoints === 0 ? 0 : Math.round((points / maxPoints) * 1000) / 10;
 
   const byFamily: Record<ErrorFamily, number> = { slip: 0, procedure: 0, concept: 0 };
@@ -98,7 +139,8 @@ export function examReport(
     SkillBreakdown & { paceSum: number; lost: number; families: Record<string, number> }
   >();
 
-  for (const r of results) {
+  for (const [index, r] of results.entries()) {
+    const { max, earned } = worth[index]!;
     let entry = skills.get(r.skill);
     if (!entry) {
       entry = {
@@ -115,17 +157,19 @@ export function examReport(
       skills.set(r.skill, entry);
     }
     entry.items++;
-    entry.maxPoints += r.points;
+    entry.maxPoints += max;
     entry.paceSum += r.expectedSeconds > 0 ? r.seconds / r.expectedSeconds : 1;
+    entry.points += earned;
     if (r.correct) {
       entry.correct++;
-      entry.points += r.points;
+      // In a bundle a right answer can still earn less than its share.
+      entry.lost += max - earned;
       continue;
     }
-    entry.lost += r.points;
+    entry.lost += max;
     if (!r.answered) {
-      entry.families.unanswered = (entry.families.unanswered ?? 0) + r.points;
-      pointsLostToGaps += r.points;
+      entry.families.unanswered = (entry.families.unanswered ?? 0) + max;
+      pointsLostToGaps += max;
       continue;
     }
     // Without a confirmed type, fall back on the model: failing something that was
@@ -134,9 +178,9 @@ export function examReport(
     const family = ERROR_FAMILY[type];
     byFamily[family]++;
     byType[type] = (byType[type] ?? 0) + 1;
-    entry.families[family] = (entry.families[family] ?? 0) + r.points;
-    if (family === 'slip') pointsLostToSlips += r.points;
-    else pointsLostToGaps += r.points;
+    entry.families[family] = (entry.families[family] ?? 0) + max;
+    if (family === 'slip') pointsLostToSlips += max;
+    else pointsLostToGaps += max;
     if (r.expectedSeconds > 0 && r.seconds / r.expectedSeconds < 0.35) rushedWrong++;
   }
 
@@ -144,8 +188,8 @@ export function examReport(
     skill: entry.skill,
     items: entry.items,
     correct: entry.correct,
-    points: entry.points,
-    maxPoints: entry.maxPoints,
+    points: round(entry.points),
+    maxPoints: round(entry.maxPoints),
     pace: Math.round((entry.paceSum / entry.items) * 100) / 100,
   }));
 
@@ -154,7 +198,7 @@ export function examReport(
     .sort((a, b) => b.lost - a.lost)
     .map((entry) => {
       const mostly = Object.entries(entry.families).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'concept';
-      return { skill: entry.skill, lost: entry.lost, mostly: mostly as ErrorFamily | 'unanswered' };
+      return { skill: entry.skill, lost: round(entry.lost), mostly: mostly as ErrorFamily | 'unanswered' };
     });
 
   return {
@@ -172,7 +216,12 @@ export function examReport(
       unanswered: results.filter((r) => !r.answered).length,
       rushedWrong,
     },
-    errors: { byFamily, byType, pointsLostToSlips, pointsLostToGaps },
+    errors: {
+      byFamily,
+      byType,
+      pointsLostToSlips: round(pointsLostToSlips),
+      pointsLostToGaps: round(pointsLostToGaps),
+    },
     bySkill,
     strong: bySkill.filter((s) => s.correct === s.items).map((s) => s.skill),
     weak: bySkill.filter((s) => s.correct === 0).map((s) => s.skill),

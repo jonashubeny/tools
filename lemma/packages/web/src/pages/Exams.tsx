@@ -18,7 +18,7 @@ export function Exams() {
   const exams = useExams();
   const graph = useGraph();
   const me = useMe();
-  const [chosen, setChosen] = useState<string>(params.get('blueprint') ?? 'chapter-test');
+  const [chosen, setChosen] = useState<string | null>(params.get('blueprint'));
   const [topics, setTopics] = useState<number[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -31,7 +31,17 @@ export function Exams() {
   if (blueprints.isPending || exams.isPending || graph.isPending) return <Loading />;
   if (blueprints.isError) return <ErrorNote error={blueprints.error} />;
 
-  const blueprint = blueprints.data.find((item) => item.id === chosen) ?? blueprints.data[0];
+  // What is offered depends on the goal: an examination's own practice test comes first where there is one.
+  const blueprint =
+    blueprints.data.find((item) => item.id === chosen) ??
+    blueprints.data.find((item) => item.kind === 'entrance') ??
+    blueprints.data.find((item) => item.id === 'chapter-test') ??
+    blueprints.data[0];
+  const structured = blueprint?.kind === 'entrance';
+  const entranceGoal = blueprints.data.some((item) => item.kind === 'entrance');
+  // Chapters are a matter of the school syllabus; other goals have none to choose from.
+  const byChapter =
+    Boolean(blueprint) && !structured && blueprint!.kind !== 'annual' && (graph.data?.topics.length ?? 0) > 0;
   const practisable = new Set(
     (graph.data?.skills ?? [])
       .filter((skill) => skill.hasProblems && skill.topic !== null)
@@ -46,7 +56,7 @@ export function Exams() {
     try {
       const created = await api.post<ExamDto>('/api/exams', {
         blueprint: blueprint.id,
-        topics: blueprint.kind === 'annual' ? undefined : topics,
+        topics: byChapter ? topics : undefined,
       });
       navigate(`/exams/${created.id}`);
     } catch (failure) {
@@ -59,11 +69,18 @@ export function Exams() {
   return (
     <div>
       <PageHeader
-        title={t('Zkoušky nanečisto', 'Mock exams')}
-        lead={t(
-          'Jako ve škole: čas běží, nápovědy nejsou, výsledek až na konci. Pak rozbor — kolik bodů stála nepozornost a kolik skutečné mezery.',
-          'As at school: the clock runs, there are no hints, the result comes at the end. Then the analysis — how many points slips cost, and how many real gaps did.',
-        )}
+        title={entranceGoal ? t('Testy nanečisto', 'Practice tests') : t('Zkoušky nanečisto', 'Mock exams')}
+        lead={
+          entranceGoal
+            ? t(
+                'Jako u zkoušky: čas běží, nápovědy nejsou, výsledek až na konci. Test má stavbu a bodování skutečného testu; potom přijde rozbor — kolik bodů stála nepozornost a kolik skutečné mezery.',
+                'As in the examination: the clock runs, there are no hints, the result comes at the end. The test has the structure and scoring of the real one; then comes the analysis — how many points slips cost, and how many real gaps did.',
+              )
+            : t(
+                'Jako ve škole: čas běží, nápovědy nejsou, výsledek až na konci. Pak rozbor — kolik bodů stála nepozornost a kolik skutečné mezery.',
+                'As at school: the clock runs, there are no hints, the result comes at the end. Then the analysis — how many points slips cost, and how many real gaps did.',
+              )
+        }
       />
 
       {running && (
@@ -95,7 +112,7 @@ export function Exams() {
             ))}
           </div>
 
-          {blueprint && blueprint.kind !== 'annual' && (
+          {byChapter && (
             <div className="mt-5">
               <div className="text-sm font-medium">{t('Z kterých kapitol', 'From which chapters')}</div>
               <div className="mt-2 flex flex-wrap gap-1.5">
@@ -161,7 +178,7 @@ export function Exams() {
               size="lg"
               onClick={() => void start()}
               busy={busy}
-              disabled={!blueprint || Boolean(running) || (blueprint.kind !== 'annual' && topics.length === 0)}
+              disabled={!blueprint || Boolean(running) || (byChapter && topics.length === 0)}
             >
               <Timer size={15} />
               {t('Začít — čas se spustí hned', 'Begin — the clock starts at once')}
@@ -193,6 +210,13 @@ export function Exams() {
                     </span>
                     {exam.finishedAt === null ? (
                       <Badge tone="accent">{t('běží', 'running')}</Badge>
+                    ) : exam.points !== null && exam.maxPoints !== null ? (
+                      <span className="shrink-0 text-right">
+                        <span className="block text-sm font-semibold tabular-nums">
+                          {exam.points}/{exam.maxPoints}
+                        </span>
+                        <span className="mono-label">{t('bodů', 'points')}</span>
+                      </span>
                     ) : (
                       <span className="shrink-0 text-right">
                         <span className="block text-sm font-semibold">{pct((exam.percent ?? 0) / 100, t.locale)}</span>

@@ -261,7 +261,8 @@ describe('mastery levels', () => {
     const next = nextLevelGates(state)!;
     expect(next.level).toBe(2);
     expect(next.gates).toEqual([{ key: 'attempts', done: false, have: 2, need: GATES.PRACTISING_ATTEMPTS }]);
-    expect(gatesFor(state, 4).map((g) => g.key)).toEqual(['ability', 'mixed', 'delay', 'hard']);
+    expect(gatesFor(state, 4).map((g) => g.key)).toEqual(['ability', 'mixed', 'delay', 'hard', 'variety']);
+    expect(gatesFor(state, 5).map((g) => g.key)).toEqual(['ability', 'mixed', 'delay', 'hard', 'variety', 'clean']);
   });
 
   it('progress grows monotonically with level', () => {

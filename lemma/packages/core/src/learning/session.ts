@@ -1,6 +1,7 @@
 import { daysBetween } from '../time';
 import type { ErrorType } from './errors';
 import type { MasteryLevel } from './mastery';
+import type { Purpose } from './priority';
 
 /**
  * The daily session planner: turns the learner's state and a time budget into an ordered
@@ -18,7 +19,10 @@ export type BlockKind =
   | 'challenge' // one harder problem
   | 'drill' // Error Lab drill on the dominant error type
   | 'mock' // short timed test before a real one
-  | 'experiment'; // optional Lab exploration
+  | 'experiment' // optional Lab exploration
+  | 'diagnostic' // the placement test
+  | 'adaptive' // a session whose every problem is chosen when it is due
+  | 'assigned'; // work set by the teacher
 
 export type ReasonCode =
   | 'review-due'
@@ -31,7 +35,11 @@ export type ReasonCode =
   | 'challenge-ready'
   | 'drill-pattern'
   | 'mock-before-test'
-  | 'experiment-see-it';
+  | 'experiment-see-it'
+  | 'diagnostic-first'
+  | 'adaptive-mix'
+  | 'assigned-by-teacher'
+  | 'mock-ready';
 
 export interface PlanBlock {
   id: string;
@@ -45,6 +53,8 @@ export interface PlanBlock {
   errorType?: ErrorType;
   /** For experiments. */
   lab?: string;
+  /** For assigned blocks: the assignment it carries out. */
+  assignment?: string;
 }
 
 export interface PlanSkill {
@@ -331,4 +341,134 @@ export function composePlan(input: PlanInput): Plan {
     test: upcoming ? { day: upcoming.test.day, inDays: upcoming.inDays, title: upcoming.test.title } : null,
     focusTopic: topic,
   };
+}
+
+// ------------------------------------------------------------------- examination goals
+
+/** Work the teacher set, as the planner sees it. */
+export interface PlanAssignment {
+  id: string;
+  kind: 'practice' | 'review' | 'remediation' | 'lesson' | 'test';
+  skills: string[];
+  minutes: number;
+}
+
+export interface GoalPlanInput {
+  day: string;
+  minutes: number;
+  /** A placement test has been finished. */
+  diagnosed: boolean;
+  /** Skills of the goal with any evidence. */
+  skillsWithEvidence: number;
+  assignments: readonly PlanAssignment[];
+  /** The best-scoring skills with what they would be practised for. */
+  top: readonly { id: string; purpose: Purpose }[];
+  dueCount: number;
+  errorFocus: { type: ErrorType; count: number } | null;
+  /** The practice test: whether the readiness report calls for one, and how long since the last. */
+  mock: { ready: boolean; daysSinceLast: number | null };
+  /** The examination itself. */
+  exam: { day: string; title?: string } | null;
+}
+
+/** A practice test at most this often. */
+const MOCK_EVERY_DAYS = 7;
+
+/**
+ * The block that carries out an assignment. It is named after the assignment, not
+ * numbered, so that a run finds it again however the plan around it has changed.
+ */
+export function assignedBlock(assignment: PlanAssignment, minutes = assignment.minutes): PlanBlock {
+  return {
+    id: `assigned:${assignment.id}`,
+    kind: assignment.kind === 'test' ? 'mock' : 'assigned',
+    minutes,
+    skills: assignment.skills,
+    assignment: assignment.id,
+    optional: false,
+    reason: { code: 'assigned-by-teacher', data: { kind: assignment.kind, count: assignment.skills.length } },
+  };
+}
+
+/**
+ * The daily plan of a learner preparing for an examination. There is no "chapter the
+ * class is on" to hang it on: the main block is an adaptive session, which chooses each
+ * problem by the scores of the moment (priority.ts). Around it: the placement test while
+ * there is none, whatever the teacher assigned, a drill against a recurring error, and —
+ * when the readiness report says the base is there — a timed practice test.
+ */
+export function composeGoalPlan(input: GoalPlanInput): Plan {
+  const minutes = Math.max(5, Math.round(input.minutes));
+  const blocks: PlanBlock[] = [];
+  let remaining = minutes;
+  // Blocks are named for what they are, not numbered: the plan is composed again whenever
+  // the teacher sets something, and a run already under way has to find its block again.
+  const add = (id: string, block: Omit<PlanBlock, 'id' | 'optional'> & { optional?: boolean }): void => {
+    blocks.push({ ...block, id, optional: block.optional ?? false });
+    if (!block.optional) remaining -= block.minutes;
+  };
+  const inDays = input.exam ? daysBetween(input.day, input.exam.day) : null;
+  const test =
+    input.exam && inDays !== null && inDays >= 0 ? { day: input.exam.day, inDays, title: input.exam.title } : null;
+
+  // ---- 1. placement: without it everything starts from the very beginning ------------
+  if (!input.diagnosed) {
+    add('diagnostic', {
+      kind: 'diagnostic',
+      minutes: Math.min(20, minutes),
+      skills: [],
+      reason: { code: 'diagnostic-first', data: { known: input.skillsWithEvidence } },
+    });
+  }
+
+  // ---- 2. what the teacher set -------------------------------------------------------
+  for (const assignment of input.assignments) {
+    if (remaining < 5 && blocks.length > 0) break;
+    const block = assignedBlock(assignment, Math.max(5, Math.min(assignment.minutes, Math.max(5, remaining))));
+    blocks.push(block);
+    remaining -= block.minutes;
+  }
+
+  // ---- 3. the adaptive session -------------------------------------------------------
+  const wantDrill = input.errorFocus !== null && minutes >= 25;
+  const drillMinutes = wantDrill ? (minutes >= 45 ? 8 : 6) : 0;
+  const adaptiveMinutes = remaining - drillMinutes;
+  if (adaptiveMinutes >= 5 && input.top.length > 0) {
+    const data: Record<string, string | number> = { due: input.dueCount, count: input.top.length };
+    input.top.slice(0, 3).forEach((entry, index) => {
+      data[`s${index + 1}`] = entry.id;
+      data[`p${index + 1}`] = entry.purpose;
+    });
+    add('adaptive', {
+      kind: 'adaptive',
+      minutes: adaptiveMinutes,
+      skills: input.top.slice(0, 3).map((entry) => entry.id),
+      reason: { code: 'adaptive-mix', data },
+    });
+  }
+
+  // ---- 4. a recurring error ----------------------------------------------------------
+  if (wantDrill && input.errorFocus && remaining >= 5) {
+    add('drill', {
+      kind: 'drill',
+      minutes: drillMinutes,
+      skills: [],
+      errorType: input.errorFocus.type,
+      reason: { code: 'drill-pattern', data: { errorType: input.errorFocus.type, count: input.errorFocus.count } },
+    });
+  }
+
+  // ---- 5. a timed practice test, offered beside the day's work -----------------------
+  const mockDue = input.mock.daysSinceLast === null || input.mock.daysSinceLast >= MOCK_EVERY_DAYS;
+  if (input.mock.ready && mockDue && !blocks.some((block) => block.kind === 'mock')) {
+    add('mock', {
+      kind: 'mock',
+      minutes: 60,
+      skills: [],
+      optional: true,
+      reason: { code: 'mock-ready', data: { inDays: inDays ?? -1, since: input.mock.daysSinceLast ?? -1 } },
+    });
+  }
+
+  return { day: input.day, minutes, blocks, test, focusTopic: null };
 }

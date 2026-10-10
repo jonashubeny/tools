@@ -49,6 +49,49 @@ const SIGN_GLITCH = /[+\-−]\s*[+\-−]/;
 const AWKWARD_ANSWER =
   /[+\-]\s*\\left\(-|(^|[^\d.,{])1x|(^|[^\d.,{])1\\left\(|(^|[^\d.,{])1(\\,)?\\sqrt|[+\-] -|(^|[^\d.,{])[01]\\mathrm/;
 
+/**
+ * Czech counts. After 2, 3 or 4 a counted noun stands in the nominative plural ("3 díly"),
+ * from 5 on in the genitive plural ("5 dílů"), and after 1 in the singular. A template
+ * written for the general case prints "3 dílů". The check looks for a small number followed
+ * by a genitive plural where the genitive cannot be right: at the start of a sentence, or
+ * after a verb or a preposition that asks for another case. Where it may be right ("ze 3
+ * dílů", "součet 4 čísel") nothing is reported, so the check has no false alarms to learn
+ * to ignore — and misses the errors it cannot be sure of.
+ */
+const CS_GENITIVE_PLURAL = String.raw`(?:(?!dolů|domů)\p{L}+ů|dětí|lidí|dní|korun|minut|hodin|sekund|čísel|číslic|vstupenek|sazenic|jabloní|zápalek|krychliček|píšťalek|map|dvojic|trojic|skupin|kartiček|stran|úloh|otázek)`;
+const CS_COUNTED = String.raw`((?:\p{L}+(?:ých|ích) )?${CS_GENITIVE_PLURAL})(?![\p{L}])`;
+const CS_FEW = new RegExp(String.raw`(?<![\d,.\u00a0])([234]) ${CS_COUNTED}`, 'gu');
+const CS_ONE = new RegExp(String.raw`(?<![\d,.\u00a0])(1) ${CS_COUNTED}`, 'gu');
+const CS_NEVER_BEFORE_GENITIVE = new Set([
+  ...['je', 'jsou', 'bylo', 'byly', 'má', 'mají', 'měl', 'měla', 'měli', 'tedy', 'jen', 'už', 'ještě', 'právě'],
+  ...['na', 'za', 'o', 'pro', 'přes', 'celkem', 'dohromady', 'každých', 'potřeba'],
+  ...['zbylo', 'zbyly', 'zbývá', 'zbývalo', 'vznikne', 'vzniknou', 'vychází', 'stojí', 'hraje', 'vejde', 'dostaneš'],
+]);
+
+/**
+ * Prose with each formula replaced by the count it states, if it states one: a bare whole
+ * number, or a calculation ending in one ("$3 + 1 = 4$ dílů"). Any other formula is not a
+ * count, whatever digit it ends in.
+ */
+const proseWithCounts = (text: string): string =>
+  text.replace(
+    /\$\$[^$]+\$\$|\$[^$]+\$/g,
+    (formula) => /^\$+\s*(\d+)\s*\$+$/.exec(formula)?.[1] ?? /=\s*(\d+)\s*\$+$/.exec(formula)?.[1] ?? ' § ',
+  );
+
+function czechCountIssues(text: string): string[] {
+  const prose = proseWithCounts(text);
+  const found: string[] = [];
+  for (const match of prose.matchAll(CS_ONE)) found.push(match[0]);
+  for (const match of prose.matchAll(CS_FEW)) {
+    const before = prose.slice(0, match.index);
+    const previous = /(\p{L}+)\s*$/u.exec(before)?.[1]?.toLowerCase();
+    const opens = before.trim() === '' || /[.:;?!(„–—]\s*$/.test(before);
+    if (opens || (previous !== undefined && CS_NEVER_BEFORE_GENITIVE.has(previous))) found.push(match[0]);
+  }
+  return found;
+}
+
 function texSegments(text: string): string[] {
   const out: string[] = [];
   const pattern = /\$\$([^$]+)\$\$|\$([^$]+)\$/g;
@@ -77,6 +120,28 @@ function checkText(issues: LintIssue[], where: string, text: L | undefined, vali
     if ((value.match(/\$/g) ?? []).length % 2 !== 0) {
       issues.push({ where: `${where}.${locale}`, message: `unbalanced $ in: ${value.slice(0, 120)}` });
       continue;
+    }
+    // A number formatted for maths that ended up in prose shows its TeX: the thin-space
+    // command between the thousands, or the braces around a decimal comma ("2{,}5").
+    const proseOnly = value.replace(/\$\$[^$]+\$\$|\$[^$]+\$/g, ' ');
+    if (/\\,|\{,\}/.test(proseOnly))
+      issues.push({
+        where: `${where}.${locale}`,
+        message: `TeX number formatting outside maths: ${value.slice(0, 120)}`,
+      });
+    if (locale === 'cs') {
+      // A number that reached Czech prose straight from JavaScript: "1 % je 0.4".
+      const decimalPoint = /\d\.\d/.exec(value.replace(/\$\$[^$]+\$\$|\$[^$]+\$|`[^`]*`/g, ' '));
+      if (decimalPoint)
+        issues.push({
+          where: `${where}.cs`,
+          message: `a decimal point in Czech prose (write a decimal comma): ${value.slice(0, 120)}`,
+        });
+      for (const phrase of czechCountIssues(value))
+        issues.push({
+          where: `${where}.cs`,
+          message: `Czech count: "${phrase}" — after 1 the singular, after 2 to 4 the nominative plural: ${value.slice(0, 120)}`,
+        });
     }
     for (const tex of texSegments(value)) checkTex(issues, `${where}.${locale}`, tex, validateTex);
   }
@@ -298,6 +363,15 @@ export function lintContent(bundle: ContentBundle, validateTex?: TexValidator): 
       if (pre === concept.id) add(where, 'lists itself as a prerequisite');
       else if (!conceptIds.has(pre)) add(where, `unknown prerequisite "${pre}"`);
     }
+    // The entrance track stands on its own: a learner preparing for an entrance
+    // examination must never be sent to second-year material, or the other way round.
+    const basic = new Set(bundle.concepts.filter((c) => c.track === 'basic').map((c) => c.id));
+    if (concept.prereqs.some((pre) => basic.has(pre) !== (concept.track === 'basic')))
+      add(where, 'prerequisites must not cross between the entrance track and the others');
+    if (concept.track === 'basic' && (concept.spec ?? []).length === 0)
+      add(where, 'an entrance-track concept must name the items of the specification it covers');
+    if (concept.paperOnly && bundle.generators.some((generator) => generator.concept === concept.id))
+      add(where, 'is marked paper-only but has generators');
     for (const enc of concept.encompasses ?? []) {
       if (!conceptIds.has(enc.id)) add(where, `encompasses unknown concept "${enc.id}"`);
       if (!(enc.w > 0 && enc.w <= 1)) add(where, `encompasses weight for "${enc.id}" must be in (0, 1]`);
@@ -460,6 +534,6 @@ export function lintContent(bundle: ContentBundle, validateTex?: TexValidator): 
 export function conceptsWithoutProblems(bundle: ContentBundle): string[] {
   const covered = new Set([...bundle.generators.map((g) => g.concept), ...bundle.staticProblems.map((p) => p.concept)]);
   return bundle.concepts
-    .filter((concept) => !concept.deprecated && !covered.has(concept.id))
+    .filter((concept) => !concept.deprecated && !concept.paperOnly && !covered.has(concept.id))
     .map((concept) => concept.id);
 }

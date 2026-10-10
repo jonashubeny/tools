@@ -13,7 +13,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { ApiFailure, api } from '../app/api';
 import { useT } from '../app/i18n';
-import { FAMILY_COLOR, FAMILY_NAMES, FAMILY_NOTES } from '../app/labels';
+import { AREA_NAMES, FAMILY_COLOR, FAMILY_NAMES, FAMILY_NOTES } from '../app/labels';
 import { useErrors, useRefresh } from '../app/queries';
 import { cn } from '../lib/cn';
 import { formatDate, formatDayShort, pct } from '../lib/format';
@@ -81,7 +81,7 @@ export function Errors() {
       {!hasData ? (
         <Empty title={t('Zatím žádné chyby k rozboru', 'No errors to analyse yet')} icon={<Target size={22} />}>
           {t(
-            'Jakmile se v úlohách objeví první chyby, začnou se tu třídit a počítat. Každou můžeš sám označit, o jaký druh šlo.',
+            'Jakmile se v úlohách objeví první chyby, začnou se tu třídit a počítat. U každé můžeš označit, o jaký druh šlo.',
             'As soon as the first errors turn up in problems, they are sorted and counted here. You can label each one yourself.',
           )}
         </Empty>
@@ -276,8 +276,10 @@ export function Errors() {
                     <BarList
                       labelWidth={170}
                       rows={data.byTopic.map((topic) => ({
-                        id: String(topic.topic),
-                        label: `${topic.topic !== null ? `${topic.topic}. ` : ''}${t(topic.title)}`,
+                        id: topic.area ?? String(topic.topic),
+                        label: topic.area
+                          ? t(AREA_NAMES[topic.area])
+                          : `${topic.topic !== null ? `${topic.topic}. ` : ''}${t(topic.title)}`,
                         value: topic.total,
                         display: `${topic.total}×`,
                       }))}
@@ -443,7 +445,7 @@ function CalibrationCard({ data }: { data: ErrorSummaryDto }) {
               '“Sure, yet wrong” is frequent for you. That is exactly where checking helps: certainty is not proof.',
             )
           : t(
-              'Když si jsi jistý, většinou to sedí. Nejistotu ber jako signál vrátit se k postupu.',
+              'Odpověď „jistě“ většinou sedí. Nejistotu ber jako signál vrátit se k postupu.',
               'When you are sure, you are mostly right. Treat uncertainty as a signal to revisit the working.',
             )}
       </p>

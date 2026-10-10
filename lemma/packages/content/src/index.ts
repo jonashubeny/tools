@@ -1,11 +1,23 @@
-import type { Concept, Generator, Lesson, Level, Mission, StaticProblem, SyllabusTopic } from '@lemma/core';
+import type {
+  Concept,
+  ExamBlueprint,
+  Generator,
+  GoalId,
+  GoalSkill,
+  Lesson,
+  Level,
+  Mission,
+  StaticProblem,
+  SyllabusTopic,
+} from '@lemma/core';
+import { BASIC_CONCEPTS } from './concepts/basic';
 import { ENRICHMENT_CONCEPTS } from './concepts/enrichment';
 import { FOUNDATION_CONCEPTS } from './concepts/foundations';
 import { EXPLOG_CONCEPTS } from './concepts/school-explog';
 import { FUNCTION_CONCEPTS } from './concepts/school-functions';
 import { GEOMETRY_CONCEPTS } from './concepts/school-geometry';
 import { TRIG_CONCEPTS } from './concepts/school-trig';
-import { EXAM_BLUEPRINTS, MILESTONES } from './exams';
+import { EXAM_BLUEPRINTS as SCHOOL_BLUEPRINTS, MILESTONES } from './exams';
 import { CURRENT_FIT_SNAPSHOT, FIT_SNAPSHOTS, FIT_TIMELINE, ROADMAP } from './fit';
 import { ABSOLUTE_GENERATORS } from './generators/absolute';
 import { COMPLEX_GENERATORS } from './generators/complex';
@@ -16,6 +28,7 @@ import { STEREOMETRY_GENERATORS } from './generators/stereometry';
 import { TRIANGLE_GENERATORS } from './generators/triangles';
 import { TRIG_GENERATORS } from './generators/trig';
 import { TRIG_IDENTITY_GENERATORS } from './generators/trig-identities';
+import { BASIC_GENERATORS } from './generators/basic';
 import { FOUNDATION_GENERATORS } from './generators/foundations';
 import { INVERSE_GENERATORS } from './generators/inverse';
 import { LINEAR_GENERATORS } from './generators/linear';
@@ -24,6 +37,7 @@ import { POWER_GENERATORS } from './generators/power';
 import { QUADRATIC_GENERATORS } from './generators/quadratic';
 import { LESSONS as FIRST_LESSONS } from './lessons';
 import { FUNCTION_LESSONS } from './lessons-functions';
+import { DEFAULT_GOAL, ENTRANCE_BLUEPRINTS, FORMAT_TAGS, GOALS, getGoal, stageOf } from './goals';
 import { MISSIONS } from './missions';
 import { STATIC_PROBLEMS } from './static-problems';
 import { SYLLABUS, SYLLABUS_BOOKS, SYLLABUS_META } from './syllabus';
@@ -49,6 +63,7 @@ export const GENERATORS: readonly Generator[] = [
   ...PLANIMETRY_GENERATORS,
   ...STEREOMETRY_GENERATORS,
   ...ENRICHMENT_GENERATORS,
+  ...BASIC_GENERATORS,
 ];
 
 export const LESSONS: readonly Lesson[] = [...FIRST_LESSONS, ...FUNCTION_LESSONS];
@@ -63,6 +78,7 @@ const AUTHORED_CONCEPTS: readonly Concept[] = [
   ...TRIG_CONCEPTS,
   ...GEOMETRY_CONCEPTS,
   ...ENRICHMENT_CONCEPTS,
+  ...BASIC_CONCEPTS,
 ];
 
 const reviewedConcepts = new Set(
@@ -77,12 +93,19 @@ const reviewedConcepts = new Set(
 export const CONCEPTS: readonly Concept[] = AUTHORED_CONCEPTS.map((concept) => ({
   ...concept,
   annualReview: concept.syllabusTopic !== undefined && reviewedConcepts.has(concept.id),
+  // Likewise the stage: the earliest part of the entrance specification that lists the concept.
+  ...(concept.track === 'basic' ? { stage: stageOf(concept) } : {}),
 }));
+
+/** Every exam template: the school's, and one practice test per entrance examination. */
+export const EXAM_BLUEPRINTS: readonly ExamBlueprint[] = [...SCHOOL_BLUEPRINTS, ...ENTRANCE_BLUEPRINTS];
 
 export {
   CURRENT_FIT_SNAPSHOT,
-  EXAM_BLUEPRINTS,
+  DEFAULT_GOAL,
   FIT_SNAPSHOTS,
+  FORMAT_TAGS,
+  GOALS,
   FIT_TIMELINE,
   MILESTONES,
   MISSIONS,
@@ -91,7 +114,33 @@ export {
   SYLLABUS,
   SYLLABUS_BOOKS,
   SYLLABUS_META,
+  getGoal,
 };
+
+export { EVIDENCE_THRESHOLD, PROVISIONAL_BELOW_PAPERS, WEIGHT_FLOOR } from './goals';
+export {
+  JPZ_PAPERS,
+  JPZ_UNREADABLE,
+  VARIANT_OF_GOAL,
+  evidenceFor,
+  formatShares,
+  type JpzVariant,
+  type Paper,
+  type PaperTask,
+  type SkillEvidence,
+  type TaskFormat,
+} from './jpz/evidence';
+export { JPZ_EVIDENCE_RETRIEVED_ON } from './jpz/evidence-data';
+export { coverageDocument } from './jpz/coverage-doc';
+export {
+  JPZ_SPEC,
+  JPZ_SPEC_SOURCE,
+  SPEC_AREAS,
+  SPEC_STAGE,
+  getSpecItem,
+  type SpecItem,
+  type SpecPart,
+} from './jpz/spec';
 
 export {
   conceptsWithoutProblems,
@@ -104,7 +153,7 @@ export {
 } from './lint';
 
 /** Bump when content changes in a way that matters to stored data or caches. */
-export const CONTENT_VERSION = '2026.10.1';
+export const CONTENT_VERSION = '2026.10.2';
 
 // ------------------------------------------------------------------------------ lookups
 
@@ -162,3 +211,45 @@ export const topLevelOf = (conceptId: string): Level | undefined => topLevels.ge
 /** Does a concept have any problems to practise with? */
 export const hasProblems = (conceptId: string): boolean =>
   generatorsFor(conceptId).length > 0 || staticProblemsFor(conceptId).length > 0;
+
+/**
+ * How many problem families of a concept count as evidence. The learner model asks for
+ * independent success in more than one of them, as far as the concept has them.
+ */
+const familyCounts = new Map<string, number>();
+for (const concept of CONCEPTS) {
+  familyCounts.set(
+    concept.id,
+    generatorsFor(concept.id).filter((generator) => !generator.deprecated).length +
+      staticProblemsFor(concept.id).filter((problem) => problem.answer.kind !== 'self').length,
+  );
+}
+export const familyCountOf = (conceptId: string): number => familyCounts.get(conceptId) ?? 0;
+
+// -------------------------------------------------------------------------------- goals
+
+const goalSkillIndex = new Map<GoalId, Map<string, GoalSkill>>(
+  GOALS.map((goal) => [goal.id, new Map(goal.skills.map((skill) => [skill.id, skill]))]),
+);
+
+/**
+ * The concepts a goal is about, in teaching order. The school goal is everything that
+ * existed before entrance goals did: the syllabus, its foundations and the enrichment.
+ */
+export function conceptsOfGoal(goal: GoalId): Concept[] {
+  if (getGoal(goal).kind === 'school') return CONCEPTS.filter((c) => c.track !== 'basic' && !c.deprecated);
+  const skills = goalSkillIndex.get(goal)!;
+  return CONCEPTS.filter((concept) => skills.has(concept.id) && !concept.deprecated);
+}
+
+/** A concept's role and weight in a goal; undefined when the goal does not contain it. */
+export const goalSkillOf = (goal: GoalId, conceptId: string): GoalSkill | undefined =>
+  goalSkillIndex.get(goal)?.get(conceptId);
+
+/** The exam templates a learner with this goal is offered. */
+export const blueprintsOfGoal = (goal: GoalId): ExamBlueprint[] =>
+  EXAM_BLUEPRINTS.filter((blueprint) =>
+    blueprint.kind === 'entrance'
+      ? blueprint.goal === goal
+      : blueprint.kind === 'custom' || getGoal(goal).kind === 'school',
+  );

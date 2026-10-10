@@ -4,11 +4,11 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { api } from '../app/api';
 import { useT } from '../app/i18n';
-import { CONTEXT_NAMES, LEVEL_NAMES } from '../app/labels';
+import { LEVEL_NAMES, RUN_NAMES } from '../app/labels';
 import { useMe, useRefresh } from '../app/queries';
 import { cn } from '../lib/cn';
 import { duration, pct } from '../lib/format';
-import { Button, Card, ErrorNote, LinkButton, Loading, StatTile } from '../ui';
+import { Button, Card, ErrorNote, LinkButton, Loading, Notice, StatTile } from '../ui';
 import { BarList } from '../viz/charts';
 import { ProblemView } from './ProblemView';
 
@@ -64,7 +64,7 @@ export function Practice() {
           {t('Dnes', 'Today')}
         </Link>
         <div className="min-w-0 flex-1 truncate text-sm font-medium">
-          {run.title ? t(run.title) : t(CONTEXT_NAMES[run.context])}
+          {run.title ? t(run.title) : t(RUN_NAMES[run.context])}
         </div>
         {!run.finished && (
           <div className="font-mono text-xs text-ink-3">
@@ -93,7 +93,18 @@ export function Practice() {
         </div>
       )}
 
-      {run.finished ? (
+      {run.context === 'diagnostic' && !run.finished && run.position <= 1 && problem?.status === 'open' && (
+        <Notice tone="info" className="mb-5" title={t('Jak rozřazovací test funguje', 'How the placement test works')}>
+          {t(
+            'Asi patnáct úloh napříč látkou. Bez nápověd, na každou jedna odpověď, a co bylo správně, uvidíš až na konci. „Tohle neumím“ je platná odpověď: test má zjistit, odkud začít, ne tě nachytat. Nic se neznámkuje.',
+            'About fifteen problems across the curriculum. No hints, one answer each, and what was right is shown only at the end. “I do not know this” is a valid answer: the test is there to find where to start, not to catch you out. Nothing is graded.',
+          )}
+        </Notice>
+      )}
+
+      {run.finished && run.context === 'diagnostic' ? (
+        <PlacementDone run={run} />
+      ) : run.finished ? (
         <Summary run={run} />
       ) : problem ? (
         <Card className={cn('p-5 sm:p-6', loading && 'opacity-60')}>
@@ -115,17 +126,49 @@ export function Practice() {
   );
 }
 
+/** The end of a placement test: no score to dwell on, a pointer to what it found. */
+function PlacementDone({ run }: { run: RunDto }) {
+  const t = useT();
+  return (
+    <Card className="p-5 sm:p-6">
+      <div className="mono-label">{t('Rozřazovací test', 'Placement test')}</div>
+      <h1 className="mt-1 text-xl font-semibold">
+        {t('Hotovo. Teď už je od čeho začít.', 'Done. Now there is somewhere to start from.')}
+      </h1>
+      <p className="mt-2 text-sm text-ink-2">
+        {t(
+          'Podle odpovědí se nastavilo, kde začneš a čím. Jedna špatná odpověď nic nerozhodla — kde to nevyšlo, test se zeptal ještě jednou a lehčeji. Všechno se dál upřesňuje podle toho, jak ti půjdou běžné úlohy.',
+          'Your answers have set where you start and with what. One wrong answer decided nothing — where it did not work out, the test asked once more and easier. Everything is refined further by how ordinary problems go.',
+        )}
+      </p>
+      <div className="mt-6 flex flex-wrap gap-2">
+        {run.diagnostic && (
+          <LinkButton to={`/diagnostic/${run.diagnostic}`} variant="primary" size="lg">
+            {t('Co test ukázal', 'What the test found')}
+          </LinkButton>
+        )}
+        <LinkButton to="/" size="lg">
+          {t('Na dnešní plán', 'To today’s plan')}
+        </LinkButton>
+      </div>
+    </Card>
+  );
+}
+
 function Summary({ run }: { run: RunDto }) {
   const t = useT();
   const navigate = useNavigate();
   const summary = run.summary;
   const [busy, setBusy] = useState(false);
   if (!summary) return <Loading />;
+  const adaptive = run.context === 'adaptive';
 
   const again = async (): Promise<void> => {
     setBusy(true);
     try {
-      const started = await api.post<StartRunResponse>('/api/practice/start', { context: 'mixed' });
+      const started = await api.post<StartRunResponse>('/api/practice/start', {
+        context: adaptive ? 'adaptive' : 'mixed',
+      });
       navigate(`/practice/${started.run.id}`);
     } catch {
       navigate('/');
@@ -138,7 +181,7 @@ function Summary({ run }: { run: RunDto }) {
   return (
     <Card className="p-5 sm:p-6">
       <div className="mono-label">{t('Shrnutí', 'Summary')}</div>
-      <h1 className="mt-1 text-xl font-semibold">{run.title ? t(run.title) : t(CONTEXT_NAMES[run.context])}</h1>
+      <h1 className="mt-1 text-xl font-semibold">{run.title ? t(run.title) : t(RUN_NAMES[run.context])}</h1>
 
       {worked === 0 ? (
         <p className="mt-3 text-sm text-ink-2">
@@ -231,7 +274,9 @@ function Summary({ run }: { run: RunDto }) {
           {t('Zpět na dnešek', 'Back to Today')}
         </LinkButton>
         <Button size="lg" onClick={() => void again()} busy={busy}>
-          {t('Ještě smíšené opakování', 'One more mixed review')}
+          {adaptive
+            ? t('Ještě jedno sezení', 'One more session')
+            : t('Ještě smíšené opakování', 'One more mixed review')}
         </Button>
       </div>
     </Card>

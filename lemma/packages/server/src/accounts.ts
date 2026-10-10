@@ -86,11 +86,12 @@ interface UserRow {
   last_seen_at: number | null;
 }
 
-const userDto = (row: UserRow): UserDto => ({
+const userDto = (row: UserRow, teachers: string[] = []): UserDto => ({
   username: row.username,
   tutor: row.tutor === 1,
   createdAt: row.created_at,
   lastSeenAt: row.last_seen_at,
+  teachers,
 });
 
 export class Accounts {
@@ -189,7 +190,66 @@ export class Accounts {
            FROM users u ORDER BY u.username`,
       )
       .all() as UserRow[];
-    return rows.map(userDto);
+    const teaching = this.main.prepare('SELECT teacher, student FROM teaching ORDER BY teacher').all() as {
+      teacher: string;
+      student: string;
+    }[];
+    return rows.map((row) =>
+      userDto(
+        row,
+        teaching.filter((entry) => entry.student === row.username).map((entry) => entry.teacher),
+      ),
+    );
+  }
+
+  // ---- who teaches whom ----------------------------------------------------------------
+  //
+  // A teacher sees the work of the learners they teach and can set work for them. The
+  // relation is made by the administrator and shown to the learner. Every teaching route
+  // asks `teaches` before it touches a learner's data: that question is the access control.
+
+  /** May this account see that learner's work? Only if the relation exists — being the administrator is not enough. */
+  teaches(teacher: string, student: string): boolean {
+    return (
+      this.main.prepare('SELECT 1 FROM teaching WHERE teacher = ? AND student = ?').get(teacher, normalise(student)) !==
+      undefined
+    );
+  }
+
+  /** The learners an account teaches, by name. */
+  studentsOf(teacher: string): string[] {
+    const rows = this.main
+      .prepare(
+        `SELECT t.student FROM teaching t JOIN users u ON u.username = t.student WHERE t.teacher = ? ORDER BY t.student`,
+      )
+      .all(teacher) as { student: string }[];
+    return rows.map((row) => row.student);
+  }
+
+  /** Who can see a learner's work. */
+  teachersOf(student: string): string[] {
+    const rows = this.main.prepare('SELECT teacher FROM teaching WHERE student = ? ORDER BY teacher').all(student) as {
+      teacher: string;
+    }[];
+    return rows.map((row) => row.teacher);
+  }
+
+  /** Replace the set of a learner's teachers. A teacher is the administrator or another user. */
+  setTeachers(name: string, teachers: readonly string[]): UserDto {
+    const { username } = this.existing(name);
+    const wanted = [...new Set(teachers.map(normalise))];
+    for (const teacher of wanted) {
+      if (teacher === username) throw badRequest('a learner cannot be their own teacher');
+      if (teacher !== ADMIN_USERNAME && !this.find(teacher)) throw badRequest(`there is no account "${teacher}"`);
+    }
+    const now = this.now();
+    this.main.transaction(() => {
+      this.main.prepare('DELETE FROM teaching WHERE student = ?').run(username);
+      const insert = this.main.prepare('INSERT INTO teaching (teacher, student, created_at) VALUES (?, ?, ?)');
+      for (const teacher of wanted) insert.run(teacher, username, now);
+    })();
+    log.info('teachers of a user set', { username, teachers: wanted });
+    return this.list().find((user) => user.username === username)!;
   }
 
   async create(name: string, password: string, tutor: boolean): Promise<UserDto> {
@@ -220,7 +280,7 @@ export class Accounts {
       .prepare('INSERT INTO users (username, tutor, created_at) VALUES (?, ?, ?)')
       .run(username, tutor ? 1 : 0, now);
     log.info(adopted ? 'user created over a database already in place' : 'user created', { username });
-    return userDto({ username, tutor: tutor ? 1 : 0, created_at: now, last_seen_at: null });
+    return userDto({ username, tutor: tutor ? 1 : 0, created_at: now, last_seen_at: null }, this.teachersOf(username));
   }
 
   setTutor(name: string, tutor: boolean): UserDto {
@@ -246,6 +306,8 @@ export class Accounts {
    */
   async remove(name: string): Promise<void> {
     const { username } = this.existing(name);
+    // Neither as a learner nor as a teacher does the account see or show anything any more.
+    this.main.prepare('DELETE FROM teaching WHERE teacher = ? OR student = ?').run(username, username);
     this.main.prepare('DELETE FROM users WHERE username = ?').run(username);
     await this.close(username);
 

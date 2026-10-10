@@ -1,5 +1,5 @@
 import { L, setL, type Generator, type Rng } from '@lemma/core';
-import { gen, mc, step } from './helpers';
+import { gen, mc, plural, step, zPrep } from './helpers';
 import {
   FALSE,
   TRUE,
@@ -1149,11 +1149,11 @@ export const ENRICHMENT_GENERATORS: Generator[] = [
         return {
           prompt: askBoth
             ? L(
-                `Ve třídě je ${total} studentů. ${a} z nich programuje v Pythonu, ${b} v jazyce C a ${neither} neprogramuje ani v jednom. Kolik studentů programuje v obou jazycích?`,
+                `Ve třídě je ${total} studentů. ${a} z nich ${plural(a, 'programuje', 'programují', 'programuje')} v Pythonu, ${b} v jazyce C a ${neither} ${plural(neither, 'neprogramuje', 'neprogramují', 'neprogramuje')} ani v jednom. Kolik studentů programuje v obou jazycích?`,
                 `A class has ${total} students. ${a} of them program in Python, ${b} in C, and ${neither} in neither. How many students program in both languages?`,
               )
             : L(
-                `Ve třídě je ${total} studentů. ${a} z nich programuje v Pythonu, ${b} v jazyce C a ${both} v obou. Kolik studentů neprogramuje ani v jednom z těchto jazyků?`,
+                `Ve třídě je ${total} studentů. ${a} z nich ${plural(a, 'programuje', 'programují', 'programuje')} v Pythonu, ${b} v jazyce C a ${both} v obou. Kolik studentů neprogramuje ani v jednom z těchto jazyků?`,
                 `A class has ${total} students. ${a} of them program in Python, ${b} in C, and ${both} in both. How many students program in neither of these languages?`,
               ),
           context: { it: true, applied: true },
@@ -1873,7 +1873,7 @@ export const ENRICHMENT_GENERATORS: Generator[] = [
       const total = 2 ** names.length;
       return {
         prompt: L(
-          `Logický obvod počítá výstup $Y$ ze vstupů ${names.map((name) => `$${name}$`).join(', ')} takto:\n\n\`Y = ${formulaGates(circuit)}\`\n\nPro kolik z ${total} kombinací vstupů je na výstupu jednička?`,
+          `Logický obvod počítá výstup $Y$ ze vstupů ${names.map((name) => `$${name}$`).join(', ')} takto:\n\n\`Y = ${formulaGates(circuit)}\`\n\nPro kolik ${zPrep(total)} ${total} kombinací vstupů je na výstupu jednička?`,
           `A logic circuit computes its output $Y$ from the inputs ${names.map((name) => `$${name}$`).join(', ')} as follows:\n\n\`Y = ${formulaGates(circuit)}\`\n\nFor how many of the ${total} input combinations is the output a one?`,
         ),
         context: { it: true, applied: true },
@@ -2027,7 +2027,7 @@ export const ENRICHMENT_GENERATORS: Generator[] = [
               `2^{${steps - 1}} = ${grouped(2 ** (steps - 1))} < ${grouped(n)} \\le ${grouped(2 ** steps)} = 2^{${steps}}`,
             ),
             step(
-              `Stačí tedy ${steps} kroků, tj. přibližně $\\log_2 n$. Procházení prvek po prvku by jich potřebovalo až $${grouped(n)}$.`,
+              `Stačí tedy ${steps} ${plural(steps, 'krok', 'kroky', 'kroků')}, tj. přibližně $\\log_2 n$. Procházení prvek po prvku by jich potřebovalo až $${grouped(n)}$.`,
               `So ${steps} steps are enough, roughly $\\log_2 n$. Going through the elements one by one could take up to $${grouped(n)}$.`,
             ),
           ],

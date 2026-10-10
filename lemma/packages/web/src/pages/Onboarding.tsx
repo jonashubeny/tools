@@ -1,12 +1,15 @@
-import type { GraphDto, Locale, MeDto } from '@lemma/core';
+import type { GoalDto, GoalId, GraphDto, Locale, MeDto } from '@lemma/core';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { type FormEvent, useState } from 'react';
 import { api } from '../app/api';
 import { I18nProvider, useT } from '../app/i18n';
+import { useGoals } from '../app/queries';
 import { applyTheme } from '../app/theme';
+import { cn } from '../lib/cn';
+import { formatDay } from '../lib/format';
 import { Button, Field, Notice, Segmented, Select, TextInput } from '../ui';
 
-/** The first minute: language, name, where the class is, how long a session should be. */
+/** The first minute: language, name, what the learner is preparing for, how long a session should be. */
 export function Onboarding({ me }: { me: MeDto }) {
   const [locale, setLocale] = useState<Locale>(me.settings.locale);
   return (
@@ -20,6 +23,12 @@ function Form({ me, locale, setLocale }: { me: MeDto; locale: Locale; setLocale:
   const t = useT();
   const client = useQueryClient();
   const graph = useQuery({ queryKey: ['graph'], queryFn: () => api.get<GraphDto>('/api/graph') });
+  const goals = useGoals();
+  // A teacher may have set the goal and the date beforehand: start from what is there.
+  const [goal, setGoal] = useState<GoalId>(me.settings.goal);
+  const [examDay, setExamDay] = useState(me.settings.examDay ?? '');
+  const chosen = goals.data?.find((entry) => entry.id === goal);
+  const entrance = chosen?.kind === 'entrance';
   const [name, setName] = useState(me.settings.name);
   const [topic, setTopic] = useState<number>(me.settings.currentTopic ?? 1);
   const [minutes, setMinutes] = useState(me.settings.sessionMinutes);
@@ -30,7 +39,15 @@ function Form({ me, locale, setLocale }: { me: MeDto; locale: Locale; setLocale:
     event.preventDefault();
     setBusy(true);
     try {
-      await api.post('/api/onboarding', { name, locale, theme, currentTopic: topic, sessionMinutes: minutes });
+      await api.post('/api/onboarding', {
+        name,
+        locale,
+        theme,
+        goal,
+        examDay: entrance && examDay !== '' ? examDay : null,
+        ...(entrance ? {} : { currentTopic: topic }),
+        sessionMinutes: minutes,
+      });
       await client.invalidateQueries();
     } finally {
       setBusy(false);
@@ -45,8 +62,8 @@ function Form({ me, locale, setLocale }: { me: MeDto; locale: Locale; setLocale:
       </h1>
       <p className="mt-2 text-ink-2">
         {t(
-          'Čtyři věci, podle kterých se skládá denní plán. Všechno jde později změnit v Nastavení.',
-          'Four things the daily plan is built from. Everything can be changed later in Settings.',
+          'Pár věcí, podle kterých se skládá denní plán. Všechno jde později změnit v Nastavení.',
+          'A few things the daily plan is built from. Everything can be changed later in Settings.',
         )}
       </p>
 
@@ -87,26 +104,71 @@ function Form({ me, locale, setLocale }: { me: MeDto; locale: Locale; setLocale:
             value={name}
             onChange={(event) => setName(event.target.value)}
             maxLength={60}
-            placeholder="Jonas"
             className="max-w-xs"
           />
         </Field>
 
-        <Field
-          label={t('Kterou kapitolu teď ve škole probíráte', 'Which chapter your class is on now')}
-          hint={t(
-            'Podle ní se vybírá nová látka. Až se ve škole posunete, změň ji.',
-            'New material is chosen from it. Change it when the class moves on.',
-          )}
-        >
-          <Select value={topic} onChange={(event) => setTopic(Number(event.target.value))}>
-            {(graph.data?.topics ?? []).map((item) => (
-              <option key={item.n} value={item.n}>
-                {item.n}. {t(item.title)}
-              </option>
+        <div>
+          <div className="mb-1.5 text-[13px] font-medium text-ink-2">
+            {t('Na co se připravuješ', 'What you are preparing for')}
+          </div>
+          <div className="grid gap-2" role="radiogroup" aria-label={t('Cíl', 'Goal')}>
+            {(goals.data ?? []).map((entry) => (
+              <GoalOption key={entry.id} goal={entry} selected={entry.id === goal} onSelect={() => setGoal(entry.id)} />
             ))}
-          </Select>
-        </Field>
+          </div>
+        </div>
+
+        {entrance && chosen?.facts ? (
+          <Field
+            label={t('Kdy zkoušku píšeš', 'When you sit the examination')}
+            hint={t(
+              `Nepovinné. Termíny níže jsou z oficiálního webu (načteno ${formatDay(chosen.facts.retrievedOn, 'cs')}); před zkouškou si je ověř.`,
+              `Optional. The dates below are from the official site (read on ${formatDay(chosen.facts.retrievedOn, 'en')}); check them before the examination.`,
+            )}
+          >
+            <TextInput
+              type="date"
+              value={examDay}
+              onChange={(event) => setExamDay(event.target.value)}
+              className="max-w-[12rem]"
+            />
+            <span className="mt-2 flex flex-wrap gap-1.5">
+              {chosen.facts.terms.map((term) => (
+                <button
+                  key={term.day + term.label.cs}
+                  type="button"
+                  onClick={() => setExamDay(term.day)}
+                  aria-pressed={examDay === term.day}
+                  className={cn(
+                    'h-7 rounded-md border px-2 text-xs',
+                    examDay === term.day
+                      ? 'border-accent bg-accent-wash text-ink'
+                      : 'border-border-strong bg-surface-2 text-ink-2 hover:bg-surface-3',
+                  )}
+                >
+                  {t(term.label)} · {formatDay(term.day, t.locale)}
+                </button>
+              ))}
+            </span>
+          </Field>
+        ) : (
+          <Field
+            label={t('Kterou kapitolu teď ve škole probíráte', 'Which chapter your class is on now')}
+            hint={t(
+              'Podle ní se vybírá nová látka. Až se ve škole posunete, změň ji.',
+              'New material is chosen from it. Change it when the class moves on.',
+            )}
+          >
+            <Select value={topic} onChange={(event) => setTopic(Number(event.target.value))}>
+              {(graph.data?.topics ?? []).map((item) => (
+                <option key={item.n} value={item.n}>
+                  {item.n}. {t(item.title)}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        )}
 
         <div>
           <div className="mb-1 text-[13px] font-medium text-ink-2">
@@ -126,7 +188,18 @@ function Form({ me, locale, setLocale }: { me: MeDto; locale: Locale; setLocale:
           </div>
         </div>
 
-        {graph.data?.syllabus.source === 'transcription' && (
+        {entrance && (
+          <Notice
+            tone="info"
+            title={t('Začne se krátkým rozřazovacím testem', 'It starts with a short placement test')}
+          >
+            {t(
+              'Asi patnáct úloh napříč látkou, bez známky. Podle nich se nastaví, odkud začít. Jde přeskočit — pak se začíná od základů.',
+              'About fifteen problems across the curriculum, with no mark. They set where to start. It can be skipped — then everything starts from the basics.',
+            )}
+          </Notice>
+        )}
+        {!entrance && graph.data?.syllabus.source === 'transcription' && (
           <Notice
             tone="info"
             title={t(
@@ -135,8 +208,8 @@ function Form({ me, locale, setLocale }: { me: MeDto; locale: Locale; setLocale:
             )}
           >
             {t(
-              'Seznam kapitol odpovídá tomu, co jsi zadal při zakládání projektu. Jakmile bude k dispozici oficiální dokument školy, je potřeba ho s ním porovnat.',
-              'The list of chapters matches what you supplied when the project was set up. Once the school’s official document is available, it should be checked against it.',
+              'Seznam kapitol odpovídá tomu, co bylo zadáno při zakládání projektu. Jakmile bude k dispozici oficiální dokument školy, je potřeba ho s ním porovnat.',
+              'The list of chapters matches what was supplied when the project was set up. Once the school’s official document is available, it should be checked against it.',
             )}
           </Notice>
         )}
@@ -146,5 +219,34 @@ function Form({ me, locale, setLocale }: { me: MeDto; locale: Locale; setLocale:
         </Button>
       </form>
     </div>
+  );
+}
+
+function GoalOption({ goal, selected, onSelect }: { goal: GoalDto; selected: boolean; onSelect: () => void }) {
+  const t = useT();
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      onClick={onSelect}
+      className={cn(
+        'flex items-start gap-3 rounded-lg border px-3.5 py-2.5 text-left',
+        selected ? 'border-accent bg-accent-wash' : 'border-border-strong bg-surface-2 hover:bg-surface-3',
+      )}
+    >
+      <span
+        className={cn(
+          'mt-1 grid h-4 w-4 shrink-0 place-items-center rounded-full border',
+          selected ? 'border-accent' : 'border-border-strong',
+        )}
+      >
+        {selected && <span className="h-2 w-2 rounded-full bg-accent" />}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-medium">{t(goal.title)}</span>
+        <span className="mt-0.5 block text-[13px] text-ink-2">{t(goal.description)}</span>
+      </span>
+    </button>
   );
 }

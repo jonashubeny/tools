@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { CONCEPTS, EXAM_BLUEPRINTS, FORMAT_TAGS, GENERATORS, GOALS, coverageDocument } from '@lemma/content';
 import { describe, expect, it } from 'vitest';
 
 /**
@@ -24,5 +25,23 @@ describe('content sources', () => {
         });
     }
     expect(offenders).toEqual([]);
+  });
+
+  it('has a coverage document that says what the data says', () => {
+    // docs/cermat-coverage.md is generated. If this fails, run `npm run jpz:coverage`.
+    const written = readFileSync(join(import.meta.dirname, '../../../docs/cermat-coverage.md'), 'utf8');
+    const generated = coverageDocument({
+      goals: GOALS,
+      concepts: CONCEPTS,
+      generators: GENERATORS,
+      blueprints: EXAM_BLUEPRINTS,
+      formatTags: FORMAT_TAGS,
+    });
+    expect(written).toBe(generated);
+    // And it does not claim more than the data supports.
+    expect(generated).toContain('Complete coverage is not claimed');
+    expect(generated).toMatch(/\d+ of the \d+ specification items have no problems in the app/);
+    // Nothing of the official tasks' wording is in it: papers appear as links only.
+    expect(generated).toContain('https://prijimacky.cermat.cz/');
   });
 });

@@ -1,25 +1,6 @@
 import type { MeDto } from '@lemma/core';
 import { useQueryClient } from '@tanstack/react-query';
-import {
-  Activity,
-  BookOpen,
-  Bug,
-  FlaskConical,
-  GraduationCap,
-  Languages,
-  LayoutDashboard,
-  LogOut,
-  Menu,
-  MessageSquare,
-  Moon,
-  Network,
-  Search,
-  Settings as SettingsIcon,
-  Sun,
-  Target,
-  Timer,
-  X,
-} from 'lucide-react';
+import { Languages, LogOut, Menu, MessageSquare, Moon, Search, Settings as SettingsIcon, Sun, X } from 'lucide-react';
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, useLocation } from 'react-router';
 import { cn } from '../lib/cn';
@@ -29,15 +10,9 @@ import { IconButton, Kbd } from '../ui';
 import { api } from './api';
 import { CommandPalette } from './CommandPalette';
 import { useT } from './i18n';
+import { navGroups, useEntrance } from './nav';
 import { forgetLearner } from './queries';
 import { currentTheme } from './theme';
-
-interface NavItem {
-  to: string;
-  label: string;
-  icon: ReactNode;
-  end?: boolean;
-}
 
 export function Shell({ me, children }: { me: MeDto; children: ReactNode }) {
   const t = useT();
@@ -84,32 +59,8 @@ export function Shell({ me, children }: { me: MeDto; children: ReactNode }) {
     [me.tutor.enabled, tutorOpen, tutorTarget],
   );
 
-  const groups: { label: string | null; items: NavItem[] }[] = [
-    { label: null, items: [{ to: '/', label: t('Dnes', 'Today'), icon: <LayoutDashboard size={16} />, end: true }] },
-    {
-      label: t('Učení', 'Learning'),
-      items: [
-        { to: '/learn', label: t('Osnovy', 'Syllabus'), icon: <BookOpen size={16} /> },
-        { to: '/tree', label: t('Strom dovedností', 'Skill tree'), icon: <Network size={16} /> },
-        { to: '/exams', label: t('Zkoušky nanečisto', 'Mock exams'), icon: <Timer size={16} /> },
-      ],
-    },
-    {
-      label: t('Nástroje', 'Tools'),
-      items: [
-        { to: '/errors', label: t('Laboratoř chyb', 'Error Lab'), icon: <Bug size={16} /> },
-        { to: '/lab', label: t('Matematická laboratoř', 'Math Lab'), icon: <FlaskConical size={16} /> },
-        { to: '/missions', label: t('Mise', 'Missions'), icon: <Target size={16} /> },
-      ],
-    },
-    {
-      label: t('Přehled', 'Overview'),
-      items: [
-        { to: '/analytics', label: t('Analytika', 'Analytics'), icon: <Activity size={16} /> },
-        { to: '/fit', label: 'FIT VUT', icon: <GraduationCap size={16} /> },
-      ],
-    },
-  ];
+  const entrance = useEntrance(me.settings.goal);
+  const groups = useMemo(() => navGroups({ entrance, students: me.students }), [entrance, me.students]);
 
   const sidebar = (
     <nav className="flex h-full flex-col" aria-label={t('Hlavní navigace', 'Main navigation')}>
@@ -120,7 +71,7 @@ export function Shell({ me, children }: { me: MeDto; children: ReactNode }) {
       <div className="flex-1 space-y-4 overflow-y-auto px-2 pb-4">
         {groups.map((group, index) => (
           <div key={index}>
-            {group.label && <div className="mono-label px-2 pb-1.5">{group.label}</div>}
+            {group.label && <div className="mono-label px-2 pb-1.5">{t(group.label)}</div>}
             <ul className="space-y-0.5">
               {group.items.map((item) => (
                 <li key={item.to}>
@@ -134,8 +85,10 @@ export function Shell({ me, children }: { me: MeDto; children: ReactNode }) {
                       )
                     }
                   >
-                    <span className="text-ink-3">{item.icon}</span>
-                    {item.label}
+                    <span className="text-ink-3">
+                      <item.icon size={16} />
+                    </span>
+                    {t(item.label)}
                   </NavLink>
                 </li>
               ))}
@@ -253,7 +206,7 @@ export function Shell({ me, children }: { me: MeDto; children: ReactNode }) {
           </aside>
         )}
       </div>
-      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} groups={groups} entrance={entrance} />
     </TutorContext.Provider>
   );
 }

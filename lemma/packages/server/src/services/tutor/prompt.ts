@@ -1,10 +1,12 @@
-import { CONCEPTS, getConcept } from '@lemma/content';
+import { DEFAULT_GOAL, conceptsOfGoal, getConcept, getGoal, goalSkillOf } from '@lemma/content';
 import {
   type ErrorType,
+  type GoalId,
   type Locale,
   type TutorMode,
   ERROR_INFO,
   answerToTex,
+  daysBetween,
   isErrorType,
   levelOf,
   pick,
@@ -23,25 +25,30 @@ import { type ProblemRow, snapshotOf } from '../practice';
  *     therefore comes after the cache breakpoint.
  */
 
-const conceptIndex = (): string =>
-  CONCEPTS.filter((concept) => !concept.deprecated)
+/** The concepts a learner with this goal works on, for the practice-problem tool. */
+const conceptIndex = (goal: GoalId): string =>
+  conceptsOfGoal(goal)
     .map((concept) => `${concept.id} — ${concept.title.en} / ${concept.title.cs}`)
     .join('\n');
 
-export const STABLE_INSTRUCTIONS = `You are the tutor inside Lemma, a self-hosted mathematics learning environment built for one learner: Jonas, a 16-year-old in the second year of an IT-focused secondary technical school in the Czech Republic who intends to study Information Technology at FIT VUT Brno. He has real experience with Linux, system administration and programming (C#, some C) and contributes to open-source projects. Treat him as a capable young engineer, not as a child.
+// The instructions are assembled from parts. Who the learner is comes first and differs
+// between the owner of the instance and everybody else; how the app decides correctness,
+// what may be said about an open problem and how errors are named is the same for all.
+
+const OWNER_INTRO = `You are the tutor inside Lemma, a self-hosted mathematics learning environment built for one learner: Jonas, a 16-year-old in the second year of an IT-focused secondary technical school in the Czech Republic who intends to study Information Technology at FIT VUT Brno. He has real experience with Linux, system administration and programming (C#, some C) and contributes to open-source projects. Treat him as a capable young engineer, not as a child.
 
 What he needs from you
-He understands mathematics well once he sees why something works; his marks suffer mostly from careless errors and lapses of attention, not from an inability to understand. So two things are worth more than anything else you can do: getting him to do the thinking himself, and locating the exact step where something went wrong. Producing answers for him is rarely what helps.
+He understands mathematics well once he sees why something works; his marks suffer mostly from careless errors and lapses of attention, not from an inability to understand. So two things are worth more than anything else you can do: getting him to do the thinking himself, and locating the exact step where something went wrong. Producing answers for him is rarely what helps.`;
 
-How to respond
+const OWNER_RESPOND = `How to respond
 - Be brief. A few sentences, or one question, at a time. He dislikes walls of text and will stop reading them.
 - Prefer a question that moves him one step forward over an explanation that takes the step for him. When you do explain, say why a step is allowed, not only that it is.
 - Write mathematics in LaTeX: $...$ inline and $$...$$ for display. No other markup is rendered except **bold** and line breaks.
 - Reply in the language named in the context. In Czech, use the terminology and notation of Czech schools: decimal comma, intervals such as $\\langle 1; 3)$, points such as $[2; -1]$, solution sets $K = \\{-1; 3\\}$, tg and cotg, and log meaning base 10.
 - Connect an idea to programming, Linux or electronics when the connection is literally true of the mathematics. Do not force one.
-- If he asks about something unrelated to mathematics, computing or studying, answer in a sentence and return to the work.
+- If he asks about something unrelated to mathematics, computing or studying, answer in a sentence and return to the work.`;
 
-Correctness is not yours to decide
+const APP_RULES = `Correctness is not yours to decide
 The app has a deterministic evaluator, and it — not you — decides whether an answer is right. You have tools that call it:
 - check_answer: checks a proposed final answer to the problem he is currently working on.
 - compare_expressions: tells you whether two expressions are equivalent. Use it to verify each line of his working against the previous one; that is how you find the first invalid step without guessing.
@@ -53,13 +60,83 @@ Problems that are still open
 The context may contain the authored solution and the correct answer of the problem he is working on. They are there so that your guidance is accurate. While that problem is open, do not state the final answer, and do not give a step that makes the rest mechanical — even if he asks directly. Give the smallest hint that lets him take the next step himself. If he wants to give up, tell him the app's "Show solution" button does that honestly: it records the problem as not solved, which is what keeps his progress figures meaningful. Once a problem is resolved, discuss its solution freely.
 
 Naming errors
-When he has made a mistake, say what kind it is, because the remedy differs: a slip (sign, arithmetic, copying, misreading the question, notation, rushing) calls for a checking habit; a procedural error (invalid manipulation, wrong formula, forgotten condition, missing case, misread graph) calls for the rule; a conceptual gap calls for the idea itself. Do not turn a slip into a lecture.
+When he has made a mistake, say what kind it is, because the remedy differs: a slip (sign, arithmetic, copying, misreading the question, notation, rushing) calls for a checking habit; a procedural error (invalid manipulation, wrong formula, forgotten condition, missing case, misread graph) calls for the rule; a conceptual gap calls for the idea itself. Do not turn a slip into a lecture.`;
 
-Facts about FIT VUT
-State facts about admission or courses only if they appear in the context. Otherwise say that you do not know and point him to the FIT page inside the app, which carries dated official sources. Admission rules change every year.
+const FIT_FACTS = `Facts about FIT VUT
+State facts about admission or courses only if they appear in the context. Otherwise say that you do not know and point him to the FIT page inside the app, which carries dated official sources. Admission rules change every year.`;
 
-Concepts in the app (id — English / Czech), for use with get_practice_problem:
-${conceptIndex()}`;
+const CONCEPTS_HEADER = `Concepts in the app (id — English / Czech), for use with get_practice_problem:`;
+
+/**
+ * The instructions for the owner of the instance: the administrator, working through the
+ * second-year syllabus. Everybody else gets `instructionsFor`.
+ */
+export const STABLE_INSTRUCTIONS = [
+  OWNER_INTRO,
+  OWNER_RESPOND,
+  APP_RULES,
+  FIT_FACTS,
+  `${CONCEPTS_HEADER}\n${conceptIndex(DEFAULT_GOAL)}`,
+].join('\n\n');
+
+/**
+ * The same text about somebody the app does not know by name or by gender. The authored
+ * parts above speak of "he"; this turns them into "the learner". Applied to authored text
+ * only — never to a problem statement or anything else that comes from content.
+ */
+export function neutral(text: string): string {
+  return text
+    .replace(/\bhimself\b/g, 'themselves')
+    .replace(/\bHe\b/g, 'The learner')
+    .replace(/\bhe\b/g, 'the learner')
+    .replace(/\bHis\b/g, "The learner's")
+    .replace(/\bhis\b/g, "the learner's")
+    .replace(/\bhim\b/g, 'the learner');
+}
+
+const LEARNER_RESPOND = `How to respond
+- Be brief: a few sentences, or one question, at a time.
+- Prefer a question that moves the learner one step forward over an explanation that takes the step for them. When you do explain, say why a step is allowed, not only that it is.
+- Write mathematics in LaTeX: $...$ inline and $$...$$ for display. No other markup is rendered except **bold** and line breaks.
+- Reply in the language named in the context. In Czech, use the terminology and notation of Czech schools: decimal comma, intervals such as $\\langle 1; 3)$, points such as $[2; -1]$, solution sets $K = \\{-1; 3\\}$, tg and cotg, and log meaning base 10.
+- Take examples from everyday life — money, time, distances, recipes — unless the learner brings up something else.
+- If the learner asks about something unrelated to mathematics or studying, answer in a sentence and return to the work.`;
+
+const ENTRANCE_INTRO = `You are the tutor inside Lemma, a self-hosted mathematics learning environment. You are talking with a pupil who is preparing for the Czech unified entrance examination in mathematics (jednotná přijímací zkouška). The context below names the variant of the examination, the school grade and what the app knows about the pupil's skills. Assume a child or a young teenager: plain words, short sentences, one idea at a time, concrete numbers before general rules. Be kind and matter-of-fact. A mistake is information about what to look at next, never a reason to make the pupil feel slow.
+
+What the pupil needs from you
+Understanding one step at a time, and finding the exact step where something went wrong. Producing answers for the pupil is rarely what helps. The examination allows no calculator and no tables, so calculate the way it is done on paper, and encourage a quick check of every result.`;
+
+const SCHOOL_INTRO = `You are the tutor inside Lemma, a self-hosted mathematics learning environment. You are talking with a learner who is working through the second-year mathematics syllabus of a Czech secondary school. The context below says what the app knows about the learner's skills; assume nothing else about who they are.
+
+What the learner needs from you
+Understanding why a step works, and finding the exact step where something went wrong. Producing answers for the learner is rarely what helps.`;
+
+const EXAM_FACTS = `Facts about the examination
+State facts about the examination — dates, points, the time limit, what a school requires — only if they appear in the context. Otherwise say that you do not know and point to the official site, prijimacky.cermat.cz. Dates and rules change every year, and each school sets its own admission criteria.`;
+
+const assembled = new Map<GoalId, string>();
+
+/**
+ * The stable part of the system prompt for whoever is asking. One text per goal, so that
+ * each can be cached as a prefix; the owner's is the one this instance was built around.
+ */
+export function instructionsFor(who: { owner: boolean; goal: GoalId }): string {
+  const entrance = getGoal(who.goal).kind === 'entrance';
+  if (who.owner && !entrance) return STABLE_INSTRUCTIONS;
+  let text = assembled.get(who.goal);
+  if (!text) {
+    text = [
+      entrance ? ENTRANCE_INTRO : SCHOOL_INTRO,
+      LEARNER_RESPOND,
+      neutral(APP_RULES),
+      entrance ? EXAM_FACTS : neutral(FIT_FACTS),
+      `${CONCEPTS_HEADER}\n${conceptIndex(who.goal)}`,
+    ].join('\n\n');
+    assembled.set(who.goal, text);
+  }
+  return text;
+}
 
 const MODE_INSTRUCTIONS: Record<TutorMode, string> = {
   socratic:
@@ -89,7 +166,18 @@ export interface TutorContextInput {
   problem: ProblemRow | null;
   /** False when the provider cannot call tools (local models). */
   toolsAvailable: boolean;
+  /**
+   * The one asking is the owner of the instance, whom the instructions describe. Anybody
+   * else is "the learner": the app knows neither their age nor their gender.
+   */
+  owner?: boolean;
 }
+
+/** The words the context uses for the learner: the owner's, or neutral ones. */
+const wordsFor = (owner: boolean) =>
+  owner
+    ? { He: 'He', he: 'he', His: 'His', his: 'his' }
+    : { He: 'The learner', he: 'the learner', His: "The learner's", his: "the learner's" };
 
 /** Top error types of the last 30 days, most frequent first. */
 function recentErrors(ctx: Ctx): { type: ErrorType; count: number }[] {
@@ -107,16 +195,31 @@ export function buildContext(ctx: Ctx, input: TutorContextInput): string {
   const { locale } = input;
   const settings = getSettings(ctx);
   const states = loadStates(ctx);
+  const goal = getGoal(settings.goal);
+  const owner = (input.owner ?? true) && goal.kind === 'school';
+  const w = wordsFor(owner);
   const lines: string[] = [];
 
   lines.push(`Reply in: ${locale === 'cs' ? 'Czech' : 'English'}.`);
   lines.push(`Today: ${today(ctx)}.`);
-  if (settings.name) lines.push(`He goes by: ${settings.name}.`);
-  lines.push('', MODE_INSTRUCTIONS[input.mode]);
+  if (settings.name) lines.push(`${w.He} goes by: ${settings.name}.`);
+  if (goal.kind === 'entrance' && goal.facts) {
+    // Facts of the examination, each from the goal's dated official sources.
+    lines.push(
+      `Preparing for: ${goal.title.en}, written at the end of grade ${goal.grade}. ${goal.facts.minutes} minutes, ${goal.facts.points} points, no calculator and no tables (official site, read on ${goal.facts.retrievedOn}).`,
+    );
+    if (settings.examDay) {
+      const days = daysBetween(today(ctx), settings.examDay);
+      lines.push(
+        `The date set in the app for the examination: ${settings.examDay}${days >= 0 ? ` (in ${days} days)` : ''}.`,
+      );
+    }
+  }
+  lines.push('', owner ? MODE_INSTRUCTIONS[input.mode] : neutral(MODE_INSTRUCTIONS[input.mode]));
   if (!input.toolsAvailable) {
     lines.push(
       '',
-      'Tools are NOT available in this session. You cannot verify calculations. Say so when it matters, do not claim to have checked anything, and for "is my answer right?" tell him to submit it in the app, which will check it.',
+      `Tools are NOT available in this session. You cannot verify calculations. Say so when it matters, do not claim to have checked anything, and for "is my answer right?" say that submitting it in the app will check it.`,
     );
   }
 
@@ -130,7 +233,7 @@ export function buildContext(ctx: Ctx, input: TutorContextInput): string {
   const errors = recentErrors(ctx);
   const slips = slipRates(ctx);
   lines.push('', 'Learner profile (from the app, current):');
-  if (practised.length === 0) lines.push('- He has not practised anything in the app yet.');
+  if (practised.length === 0) lines.push(`- ${w.He} has not practised anything in the app yet.`);
   if (weakest.length > 0) {
     lines.push(
       `- Weakest practised skills: ${weakest.map((entry) => `${getConcept(entry.state.skill)?.title.en ?? entry.state.skill} (level ${entry.level}/5)`).join('; ')}.`,
@@ -143,8 +246,12 @@ export function buildContext(ctx: Ctx, input: TutorContextInput): string {
   }
   if (slips.recent !== null)
     lines.push(`- Share of recent problems spoiled by a slip: ${Math.round(slips.recent * 100)} %.`);
-  if (settings.currentTopic !== null)
-    lines.push(`- His class is currently on syllabus topic ${settings.currentTopic}.`);
+  if (goal.kind === 'school' && settings.currentTopic !== null)
+    lines.push(`- ${w.His} class is currently on syllabus topic ${settings.currentTopic}.`);
+  if (settings.inSchool.length > 0)
+    lines.push(
+      `- ${w.His} class is currently on: ${settings.inSchool.map((id) => getConcept(id)?.title.en ?? id).join(', ')}.`,
+    );
 
   // ---- the concept under discussion
   const conceptId = input.problem?.skill ?? input.conceptId;
@@ -153,10 +260,21 @@ export function buildContext(ctx: Ctx, input: TutorContextInput): string {
     const state = states.get(concept.id);
     lines.push('', `Concept under discussion: ${concept.title.en} / ${concept.title.cs} (id ${concept.id}).`);
     lines.push(`- What mastering it means: ${concept.summary.en}`);
-    lines.push(
-      `- Source: ${concept.track === 'school' ? `on his school syllabus (topic ${concept.syllabusTopic})` : concept.track === 'foundation' ? 'a prerequisite from earlier years' : 'enrichment beyond the school syllabus'}.`,
-    );
-    lines.push(`- His level on it: ${state ? levelOf(state) : 0}/5 after ${state?.attempts ?? 0} problems.`);
+    const role = goalSkillOf(goal.id, concept.id)?.role;
+    const source =
+      concept.track === 'school'
+        ? `on ${w.his} school syllabus (topic ${concept.syllabusTopic})`
+        : concept.track === 'foundation'
+          ? 'a prerequisite from earlier years'
+          : concept.track === 'basic'
+            ? role === 'tested'
+              ? 'asked in the entrance examination'
+              : role === 'prerequisite'
+                ? 'a prerequisite of what the entrance examination asks'
+                : 'beyond what this entrance examination asks'
+            : 'enrichment beyond the school syllabus';
+    lines.push(`- Source: ${source}.`);
+    lines.push(`- ${w.His} level on it: ${state ? levelOf(state) : 0}/5 after ${state?.attempts ?? 0} problems.`);
     if (concept.prereqs.length > 0)
       lines.push(`- Prerequisites: ${concept.prereqs.map((id) => getConcept(id)?.title.en ?? id).join(', ')}.`);
     const why = concept.why ?? {};
@@ -170,7 +288,7 @@ export function buildContext(ctx: Ctx, input: TutorContextInput): string {
     const open = row.status === 'open';
     lines.push(
       '',
-      `Problem he ${open ? 'is working on (OPEN — do not reveal the answer)' : 'worked on (resolved — may be discussed freely)'}:`,
+      `Problem ${w.he} ${open ? 'is working on (OPEN — do not reveal the answer)' : 'worked on (resolved — may be discussed freely)'}:`,
     );
     lines.push(`- Statement: ${pick(snapshot.prompt, locale)}`);
     lines.push(
@@ -180,9 +298,9 @@ export function buildContext(ctx: Ctx, input: TutorContextInput): string {
       .prepare(`SELECT input, verdict FROM attempts WHERE problem_id = ? ORDER BY id`)
       .all(row.id) as { input: string; verdict: string }[];
     if (inputs.length > 0)
-      lines.push(`- What he submitted: ${inputs.map((a) => `"${a.input}" (${a.verdict})`).join(', ')}.`);
+      lines.push(`- What ${w.he} submitted: ${inputs.map((a) => `"${a.input}" (${a.verdict})`).join(', ')}.`);
     if (isErrorType(row.error_inferred))
-      lines.push(`- The app's guess at his first error: ${ERROR_INFO[row.error_inferred].title.en}.`);
+      lines.push(`- The app's guess at ${w.his} first error: ${ERROR_INFO[row.error_inferred].title.en}.`);
     if (row.status !== 'open') lines.push(`- Outcome: ${row.status}.`);
     lines.push('- CONFIDENTIAL while the problem is open — authored solution:');
     snapshot.solution.forEach((s, index) => {
@@ -193,7 +311,7 @@ export function buildContext(ctx: Ctx, input: TutorContextInput): string {
     if (answer) lines.push(`- CONFIDENTIAL while the problem is open — correct answer: $${answer}$`);
     if (snapshot.hints.length > row.hints_used) {
       lines.push(
-        `- The next built-in hint he has not taken yet (you may paraphrase it): ${pick(snapshot.hints[row.hints_used]!, 'en')}`,
+        `- The next built-in hint ${w.he} has not taken yet (you may paraphrase it): ${pick(snapshot.hints[row.hints_used]!, 'en')}`,
       );
     }
   }

@@ -5,19 +5,35 @@ import type { VerifySpec } from './verify';
 
 /** See docs/content-model.md for the reasoning behind these shapes. */
 
-/** Where a concept comes from. Only `school` concepts are on the official syllabus. */
-export type Track = 'school' | 'foundation' | 'reasoning' | 'vut';
+/**
+ * Where a concept comes from. Only `school` concepts are on the official second-year
+ * syllabus. `basic` is the mathematics of primary and lower-secondary school (RVP ZV), the
+ * material of the unified entrance examination.
+ */
+export type Track = 'school' | 'foundation' | 'reasoning' | 'vut' | 'basic';
 
 /** Columns of the skill tree. */
 export type Area =
-  'algebra' | 'functions' | 'explog' | 'trig' | 'complex' | 'geometry' | 'reasoning' | 'discrete' | 'computing';
+  | 'numbers'
+  | 'algebra'
+  | 'functions'
+  | 'explog'
+  | 'trig'
+  | 'complex'
+  | 'data'
+  | 'geometry'
+  | 'reasoning'
+  | 'discrete'
+  | 'computing';
 
 export const AREAS: readonly Area[] = [
+  'numbers',
   'algebra',
   'functions',
   'explog',
   'trig',
   'complex',
+  'data',
   'geometry',
   'reasoning',
   'discrete',
@@ -89,6 +105,18 @@ export interface Concept {
    * content package from the generators tagged for the review; not authored by hand.
    */
   annualReview?: boolean;
+  /**
+   * For `basic` concepts: the part of the entrance specification the skill belongs to —
+   * what is expected at the end of grade 5, 7 or 9.
+   */
+  stage?: 5 | 7 | 9;
+  /** Items of the official specification the concept covers, e.g. 'C1.1.4'. */
+  spec?: string[];
+  /**
+   * Cannot be practised on a screen (geometric constructions). Such a concept is part of
+   * the curriculum and of the evidence, and is exempt from having problems.
+   */
+  paperOnly?: boolean;
   deprecated?: boolean;
 }
 
@@ -272,17 +300,108 @@ export interface Mission {
 
 // ------------------------------------------------------------------------------ exams
 
+/** How a slot of an entrance practice test is answered. */
+export type SlotFormat =
+  | 'open' // a typed result
+  | 'choice' // one of five options
+  | 'truefalse' // a statement that is true or not
+  | 'matching'; // one of six options shared by a bundle
+
+/** One scored answer field of an entrance practice test. */
+export interface ExamSlot {
+  /** Label as in the booklet: '1', '2.1', '11.2'. */
+  label: string;
+  points: number;
+  /** Skills to draw from; one is chosen by its weight in the examination. */
+  skills: string[];
+  format: SlotFormat;
+  level: Level;
+  /** Slots that share a bundle are scored together, by `bundles[bundle]`. */
+  bundle?: string;
+}
+
 export interface ExamBlueprint {
   id: string;
   title: L;
   description: L;
-  kind: 'chapter' | 'annual' | 'custom';
+  kind: 'chapter' | 'annual' | 'custom' | 'entrance';
   /** Concepts to draw from; for 'chapter' and 'annual' this is filled at runtime. */
   concepts: string[];
   items: number;
   minutes: number;
   /** Share of items at each level, e.g. {2: 0.4, 3: 0.4, 4: 0.2}. */
   levelMix: Partial<Record<Level, number>>;
+  /** For 'entrance': the goal whose test this follows. Only learners with that goal see it. */
+  goal?: GoalId;
+  /** For 'entrance': the fixed structure, in order. */
+  slots?: ExamSlot[];
+  /** Points of a bundle by the number of its slots answered correctly: [0, 0, 2, 4]. */
+  bundles?: Record<string, number[]>;
+  /** Points of the real test that cannot be earned on a screen (construction tasks). */
+  offScreenPoints?: number;
+}
+
+// ------------------------------------------------------------------------------- goals
+
+/** What a learner is preparing for. The default is the second-year syllabus. */
+export const GOAL_IDS = ['school-it-2', 'jpz-9', 'jpz-7', 'jpz-5'] as const;
+export type GoalId = (typeof GOAL_IDS)[number];
+
+export function isGoalId(value: unknown): value is GoalId {
+  return typeof value === 'string' && (GOAL_IDS as readonly string[]).includes(value);
+}
+
+/**
+ * Why a skill belongs to a goal. `tested`: a task of that examination was assigned to it,
+ * or its part of the specification lists it. `prerequisite`: needed by a tested skill but
+ * belonging to an earlier part. `enrichment`: neither.
+ */
+export type SkillRole = 'tested' | 'prerequisite' | 'enrichment';
+
+export interface GoalSkill {
+  id: string;
+  role: SkillRole;
+  /** Share of the points in the papers that were read, 0–1; 0 for prerequisites. */
+  weight: number;
+  /** Tasks assigned to the skill: in papers classified by reading, and by keyword rules. */
+  tasks: { read: number; rules: number };
+}
+
+/** The facts of an examination, each from an official source. */
+export interface ExamFacts {
+  minutes: number;
+  points: number;
+  tasks: number;
+  open: number;
+  closed: number;
+  /** What may be used during the test. */
+  aids: L;
+  /** Dates of the coming terms. */
+  terms: { label: L; day: string }[];
+  sources: SourceRef[];
+  /** ISO date the sources were read. */
+  retrievedOn: string;
+  /** ISO date after which the interface asks for the facts to be checked again. */
+  reviewAfter: string;
+}
+
+export interface Goal {
+  id: GoalId;
+  kind: 'school' | 'entrance';
+  title: L;
+  /** For badges and menus. */
+  short: L;
+  description: L;
+  /** The grade at whose end the examination is written. */
+  grade: 5 | 7 | 9 | null;
+  facts: ExamFacts | null;
+  /** Empty for the school goal, whose skills are the syllabus and its tracks. */
+  skills: GoalSkill[];
+  /** Skills the diagnostic starts from, one per strand of the prerequisite graph. */
+  anchors: string[];
+  /** How many past papers the weights rest on; few papers make them provisional. */
+  papersRead: number;
+  provisional: boolean;
 }
 
 // ------------------------------------------------------------------------- FIT VUT data

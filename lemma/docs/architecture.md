@@ -9,6 +9,7 @@
   or Cloudflare       │  │ static files │   │ API (Hono)                           │ │
   Tunnel)             │  │ built SPA    │   │  auth · practice · plan · exam ·     │ │
                       │  └──────────────┘   │  errors · analytics · tutor · admin  │ │
+                      │                     │  teach (one gate per student)        │ │
                       │                     └───────┬───────────────┬──────────────┘ │
                       │   in-process jobs           │               │                │
                       │   (backup, forge sync)      ▼               ▼                │
@@ -31,9 +32,9 @@ without any of them.
 
 | Package | Contains | Depends on |
 |---|---|---|
-| `@lemma/core` | Expression parser and evaluator, answer checking, error inference, mastery, scheduling, session planning, streaks, exam scoring, graph layout, content *types* | `ts-fsrs` |
-| `@lemma/content` | Concepts, lessons, generators, static problems, missions, FIT snapshots, syllabus | core |
-| `@lemma/server` | HTTP API, SQLite access, auth, jobs, tutor, integrations | core, content |
+| `@lemma/core` | Expression parser and evaluator, answer checking, error inference, mastery, scheduling, selection of the next skill, placement, path states, readiness, session planning, streaks, exam scoring, graph layout, content *types* | `ts-fsrs` |
+| `@lemma/content` | Concepts, lessons, generators, static problems, missions, FIT snapshots, syllabus; goals, the entrance specification and the classified past papers | core |
+| `@lemma/server` | HTTP API, SQLite access, auth, jobs, tutor, integrations, teaching; simulated learners for tests and demonstrations (`src/dev`) | core, content |
 | `@lemma/web` | React single-page app | core (types, parser, figure maths) |
 
 Rules that keep this maintainable:
@@ -90,7 +91,7 @@ bump the version next to it.
 | `sessions` | hashed session tokens with expiry, each naming its account (none: the administrator) |
 | `users` | the other accounts: name, tutor permission, created — used in the main database only |
 | `settings` | key → JSON (locale, theme, school state, goals, integrations) |
-| `problems` | every issued problem instance: generator, seed, level, context, snapshot JSON, status |
+| `problems` | every issued problem instance: generator, seed, level, context, snapshot JSON, status; the chance of guessing it; where a selection was made, its purpose and reason |
 | `attempts` | every submitted answer: input, verdict, time, hints so far, inferred and confirmed error |
 | `events` | append-only activity log: type, day, points, payload |
 | `skill_state` | per-concept cache: θ, counters, evidence flags, FSRS card, error counts |
@@ -101,6 +102,16 @@ bump the version next to it.
 | `tutor_threads`, `tutor_messages` | tutor conversations |
 | `mission_progress` | milestones, notes, repository URL |
 | `forge_cache` | cached GitHub/Forgejo activity with ETag and fetch time |
+| `teaching` | who teaches whom (teacher, student) — used in the main database only |
+| `assignments` | work a teacher set for this learner: kind, skills, minutes, note, status, the run or test that did it |
+| `focus` | what a teacher noted about a skill of this learner in a session ("difficulty", "covered"), with an expiry |
+| `diagnostics` | placement tests: the run, the goal, the stored report |
+| `student_notes` | a teacher's private notes about a student — in the **teacher's** database |
+| `teach_sessions` | tutoring sessions a teacher ran: brief, the problems shown, the wrap-up — in the **teacher's** database |
+
+There is one schema, so every database has every table and uses those that are its
+business (migration 3 says which). Where a table lives is a security decision, not a
+convenience: see §6, *Teaching*.
 
 A problem instance is stored as a **snapshot** when issued. Checking an answer never
 regenerates the problem, so a content update cannot change a question the learner is in
@@ -133,6 +144,21 @@ over `lemma.sqlite`. `GET /api/admin/export` produces the same data as JSON.
 
 Steps 3's read-modify-write is one SQLite transaction.
 
+Two kinds of run decide their next problem only when it is asked for, instead of working
+through a queue built at the start:
+
+- **An adaptive run.** `POST /api/runs/:id/next` gathers every skill of the learner's goal
+  as the scoring function wants it (`services/selection.ts`), scores them
+  (`core/learning/priority.ts`), applies the session's rules to what the run has asked so
+  far, and issues a problem for the chosen skill and purpose. The purpose and the reason
+  are stored with the problem and shown with it. The draw among equal scores is seeded by
+  the run and the step, so asking twice gives the same problem.
+- **A placement test.** The next problem follows from the answers so far
+  (`core/learning/diagnostic.ts`). An answer returns the verdict `recorded` and nothing
+  else — no right or wrong, no solution — until the run ends; then the report is written
+  and the placements it implies are already in the learner model, because they are folded
+  from the log like everything else.
+
 ### Three verdicts, not two
 
 The checker (`core/answer`) answers *correct*, *incorrect* or **invalid**. Invalid means
@@ -162,6 +188,8 @@ Threat model: a personal app reachable from the internet through a tunnel.
 - **Separation of learners**: one database per account (below), so a route cannot return
   another learner's row — there is no such row in the database it was handed. Everything
   under `/api/admin` requires the administrator, in one place.
+- **Teaching**: the one way to another learner's data is `/api/teach/students/:student`,
+  behind one check that the account asking teaches that learner (below).
 - **Login throttling** per client address with exponential back-off.
 - **CSRF**: state-changing routes require a JSON content type and a same-origin `Origin`
   header, on top of `SameSite`.
@@ -194,8 +222,10 @@ application, and one forgotten `WHERE` would show one person another's work. Wit
 files the separation does not depend on anyone remembering anything, and the account tests
 check it both through the API and on disk. It also keeps what was already true: one writer
 per database, a backup is a file, the learner model replays from one log. The cost is an
-open file handle per user and that nothing can be computed *across* learners — which this
-application does not want to do anyway (no leaderboards, no comparisons).
+open file handle per user and that nothing can be computed *across* learners in one query —
+which this application does not want to do anyway. The one view that puts learners side by
+side (a teacher's, below) opens each database through the same gate as everything else
+and produces no ranking.
 
 Three things follow from "a user's database is a complete Lemma database":
 
@@ -214,6 +244,44 @@ off for a new one, and its concurrency limit is counted per learner.
 Removing an account deletes its row and sessions and moves its directory to
 `users/.deleted/`: months of somebody's work should survive one wrong click.
 Putting Cloudflare Access in front is recommended and needs no change in the app.
+
+### Teaching: who may see whom
+
+A teacher is an account the administrator has named as the teacher of another account
+(`teaching`, in the main database; `PUT /api/admin/users/:username` with `teachers`). It is
+a relation between two accounts, not a role with powers of its own.
+
+- **One gate.** Everything about one learner is under `/api/teach/students/:student`, and
+  a middleware in front of all of it checks `accounts.teaches(asking, student)` before any
+  handler runs. Handlers take the learner from what the gate set and from nowhere else, so
+  a new route cannot forget the check. The refusal is the same `403` for a learner who is
+  somebody else's and for one who does not exist: the route says nothing about which
+  accounts there are. The list and the side-by-side view take only names the teacher
+  teaches.
+- **The administrator is not everybody's teacher.** Creating accounts does not open their
+  work; the administrator sees a learner's work only by being named that learner's
+  teacher, which the learner can then read.
+- **The learner knows.** `GET /api/me` lists who teaches the account, and Settings shows it
+  with what those accounts can see.
+- **What a teacher can change** is short: the learner's goal, examination date and what
+  the class is on; assignments; the focus noted on a skill. Not the password, not the
+  other settings, not the log — and never a mastery level, which only the learner's own
+  work moves.
+- **Private notes are out of the learner's reach by construction.** A teacher's notes and
+  session records are rows of the *teacher's* database. A learner's request is handed the
+  learner's database, in which those rows do not exist; no learner route would have to be
+  wrong for them to leak, because there is nothing to filter. The note is found only
+  under the student it was written about, so one teacher's note cannot be addressed
+  through another student either.
+- **Problems shown in a tutoring session are not the learner's attempts.** They are
+  generated and checked in the teacher's session record. What two people work out
+  together says nothing about what one can do alone; the session leaves the learner only
+  a focus on the skills that were hard and, if the teacher sets it, homework.
+- **Exports** contain the tables of one's own database: a learner's has the assignments
+  and placement tests, never anybody's notes; a teacher's has their notes.
+
+The tests ask for every teaching route as a stranger, as another teacher and as the
+student, and read a learner's every response and export for the text of a note.
 
 ## 7. The tutor
 
@@ -238,7 +306,15 @@ question ─▶ context builder ─▶ model ─▶ stream to browser
 - **Remembers weaknesses** through the learner model, injected fresh each time — not
   through opaque model memory.
 - **Help is not free.** Asking about an open problem counts like taking a hint (capped at
-  two), so the mastery evidence stays honest. While a mock exam runs, the tutor is off.
+  two), so the mastery evidence stays honest. While a mock exam or a placement test runs,
+  the tutor is off (a placement test left unfinished stops counting after 45 minutes).
+- **It knows whom it is talking to.** The instructions this instance was built around
+  address its owner and the second-year syllabus, and are sent unchanged to the owner. Any
+  other learner gets a text without the owner's person in it, and one preparing for an
+  entrance examination gets that examination's concepts and a rule in place of the FIT
+  facts: state a date, a score or a school's requirement only if it is in the context,
+  otherwise say so and point to the official site. One text per goal, so each still
+  caches as a prefix.
 - **Provider-neutral**: Claude through the official SDK (streaming, adaptive thinking,
   the stable instructions cached, a server-side fallback on Opus for requests a safety
   classifier declines by mistake), or any OpenAI-compatible endpoint (Ollama, llama.cpp,
@@ -341,9 +417,20 @@ width when its container is momentarily not laid out, rather than tearing itself
 
 | Layer | What is tested |
 |---|---|
-| core | parser and evaluator (including Czech notation), LaTeX output, answer checking per kind and the three verdicts, error inference, Elo updates, level gates, scheduler mapping, activity scoring, streak and rest-day logic, study-day boundaries, session planner, exam scoring, graph layout, the answer oracles |
-| content | every generator for 40 seeds at each level (`content-model.md` §4); structure of the syllabus, the prerequisite graph and the FIT snapshot; coverage of every concept and every chapter; hand-written identity and Boolean tables checked numerically |
-| server | migrations, auth, throttling and password reset, the practice flow end to end against an in-memory database, recompute equals incremental state, exams including the annual review, insights, the tutor against scripted providers, a guard on the content sources |
+| core | parser and evaluator (including Czech notation), LaTeX output, answer checking per kind and the three verdicts, error inference, Elo updates, level gates, scheduler mapping, activity scoring, streak and rest-day logic, study-day boundaries, session planner, exam scoring, graph layout, the answer oracles; guessing and false mastery, the selection scores and session rules, prerequisites as a constraint, the placement queue and its priors, path states, readiness, bundle scoring |
+| content | every generator for 40 seeds at each level (`content-model.md` §4); structure of the syllabus, the prerequisite graph and the FIT snapshot; coverage of every concept and every chapter; hand-written identity and Boolean tables checked numerically; the examination data — papers, specification, goals, practice tests |
+| server | migrations including the upgrade of an existing database, auth, throttling and password reset, the practice flow end to end against an in-memory database, recompute equals incremental state, exams including the annual review and the entrance practice tests, insights, the tutor against scripted providers, a guard on the content sources and on the generated coverage document; simulated learners working through adaptive sessions; who may see whose work |
+
+**Simulated learners.** Whether a selection algorithm does what its description says cannot
+be read off unit tests of its parts. `packages/server/src/dev/personas.ts` defines
+fictional learners — a true ability per skill, a habit of errors, a pace — who answer
+through the same service functions as a browser does, with a clock that can be moved. The
+adaptive tests state their expectations about such a learner's weeks ("a learner without
+fractions is given fraction problems before equations"; "a learner who answers true/false
+statements well and nothing else is not shown as mastering anything"), and
+`scripts/dev-seed-class.ts` uses the same personas to fill a demonstration instance with
+a teacher and two students. They are test material: nothing in the running application
+uses them.
 
 `npm test` runs everything; `npm run typecheck` checks all four packages. Beyond the
 automated tests, the interface was exercised in headless Chrome (both themes, desktop and

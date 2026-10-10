@@ -1,19 +1,26 @@
-import type { DashboardDto, PlanBlockDto, StartRunResponse } from '@lemma/core';
+import type { AssignmentDto, DashboardDto, PlanBlockDto, StartRunResponse } from '@lemma/core';
 import { ERROR_INFO } from '@lemma/core';
 import { ArrowRight, BedDouble, CalendarDays, Check, Play, RotateCcw } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { api } from '../app/api';
-import { Gates, SkillRow, useTitleOf } from '../app/components';
+import { type Started, Gates, SkillRow, useFollow, useStarter, useTitleOf } from '../app/components';
 import { useT } from '../app/i18n';
-import { BLOCK_NAMES, LEVEL_NAMES, reasonText } from '../app/labels';
-import { useDashboard, useDay, useRefresh } from '../app/queries';
+import {
+  ASSIGNMENT_NAMES,
+  BLOCK_NAMES,
+  LEVEL_NAMES,
+  PURPOSE_NAMES,
+  READINESS_NAMES,
+  reasonText,
+  whyText,
+} from '../app/labels';
+import { useDashboard, useDay, useMe, useRefresh } from '../app/queries';
 import { cn } from '../lib/cn';
 import { formatDate, formatDay, formatTime, inDays, pct, plural } from '../lib/format';
 import { Badge, Button, Card, ErrorNote, Loading, Meter, Notice, SectionLabel, Segmented, StatTile } from '../ui';
 import { Heatmap } from '../viz/Heatmap';
-
-type BlockStart = StartRunResponse | { redirect: 'lesson' | 'exam' | 'lab'; target: string };
+import { ReadinessParts, examCountdown } from '../app/readiness-parts';
 
 export function Today() {
   const t = useT();
@@ -36,7 +43,18 @@ export function Today() {
           <ActivityCard data={data} />
         </div>
         <div className="min-w-0 space-y-5">
-          <FocusCard data={data} />
+          {data.entrance ? (
+            <>
+              <NextCard data={data} />
+              <AssignmentsCard data={data} />
+              <ReadinessCard data={data} />
+            </>
+          ) : (
+            <>
+              <FocusCard data={data} />
+              <AssignmentsCard data={data} />
+            </>
+          )}
           <WeakCard data={data} />
           <RecentCard data={data} />
           <FitCard data={data} />
@@ -50,7 +68,7 @@ export function Today() {
 
 function PlanCard({ data }: { data: DashboardDto }) {
   const t = useT();
-  const navigate = useNavigate();
+  const follow = useFollow();
   const refresh = useRefresh();
   const titleOf = useTitleOf();
   const [busy, setBusy] = useState<string | null>(null);
@@ -66,14 +84,7 @@ function PlanCard({ data }: { data: DashboardDto }) {
     setBusy(block.id);
     setError(null);
     try {
-      const result = await api.post<BlockStart>(`/api/plan/blocks/${block.id}/start`);
-      if ('redirect' in result) {
-        if (result.redirect === 'lesson') navigate(`/lesson/${result.target}`);
-        else if (result.redirect === 'exam') navigate(`/exams?blueprint=${result.target}`);
-        else navigate(`/lab/${result.target}`);
-      } else {
-        navigate(`/practice/${result.run.id}`);
-      }
+      follow(await api.post<Started>(`/api/plan/blocks/${encodeURIComponent(block.id)}/start`));
     } catch (failure) {
       setError(failure);
     } finally {
@@ -83,6 +94,11 @@ function PlanCard({ data }: { data: DashboardDto }) {
 
   const setMinutes = async (minutes: number): Promise<void> => {
     await api.post('/api/plan/regenerate', { minutes });
+    refresh();
+  };
+  // The placement test is an offer: whoever would rather start practising can say so.
+  const skipPlacement = async (): Promise<void> => {
+    await api.post('/api/diagnostic/skip');
     refresh();
   };
 
@@ -116,7 +132,7 @@ function PlanCard({ data }: { data: DashboardDto }) {
         </div>
       </div>
 
-      {plan.test && (
+      {plan.test && !data.entrance && (
         <Notice
           tone="info"
           className="mt-4"
@@ -165,7 +181,10 @@ function PlanCard({ data }: { data: DashboardDto }) {
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                      <span className="font-medium">{t(BLOCK_NAMES[block.kind])}</span>
+                      <span className="font-medium">
+                        {block.assignment ? t(ASSIGNMENT_NAMES[block.assignment.kind]) : t(BLOCK_NAMES[block.kind])}
+                      </span>
+                      {block.assignment && <Badge tone="accent">{t('zadáno', 'assigned')}</Badge>}
                       <Badge>{block.minutes} min</Badge>
                       {block.optional && <Badge tone="outline">{t('volitelné', 'optional')}</Badge>}
                       {block.status === 'active' && <Badge tone="accent">{t('rozpracováno', 'in progress')}</Badge>}
@@ -179,10 +198,34 @@ function PlanCard({ data }: { data: DashboardDto }) {
                         {block.skills.length > 3 && ` · +${block.skills.length - 3}`}
                       </div>
                     )}
-                    <p className="mt-1.5 text-[13px] text-ink-3">
-                      <span className="font-medium text-ink-2">{t('Proč: ', 'Why: ')}</span>
-                      {reasonText(block, t, titleOf)}
-                    </p>
+                    {block.assignment?.note ? (
+                      <p className="mt-1.5 text-[13px] text-ink-2">
+                        <span className="font-mono text-xs text-ink-3">{block.assignment.createdBy}: </span>
+                        {block.assignment.note}
+                      </p>
+                    ) : (
+                      <p className="mt-1.5 text-[13px] text-ink-3">
+                        <span className="font-medium text-ink-2">{t('Proč: ', 'Why: ')}</span>
+                        {reasonText(block, t, titleOf)}
+                      </p>
+                    )}
+                    {block.assignment?.dueDay && (
+                      <p className="mt-1 text-xs text-ink-3">
+                        {t('do', 'by')} {formatDay(block.assignment.dueDay, t.locale)}
+                      </p>
+                    )}
+                    {block.kind === 'diagnostic' && block.status === 'todo' && (
+                      <button
+                        type="button"
+                        onClick={() => void skipPlacement()}
+                        className="mt-1.5 text-xs text-ink-3 underline-offset-2 hover:text-ink-2 hover:underline"
+                      >
+                        {t(
+                          'Raději rovnou procvičovat — test jde udělat kdykoli později',
+                          'I would rather start practising — the test can be taken any time later',
+                        )}
+                      </button>
+                    )}
                   </div>
                   {!done && (
                     <Button
@@ -209,10 +252,15 @@ function PlanCard({ data }: { data: DashboardDto }) {
       )}
       {data.totals.problems === 0 && (
         <p className="mt-4 text-[13px] text-ink-3">
-          {t(
-            'Plán zatím vychází jen z kapitoly, kterou jsi nastavil. Po prvních úlohách se začne řídit tím, co ti jde a co ne.',
-            'For now the plan is based only on the chapter you set. After the first problems it starts following what you can and cannot do.',
-          )}
+          {data.entrance
+            ? t(
+                'Zatím o tobě aplikace nic neví, takže začíná od základů. Po rozřazovacím testu nebo prvních úlohách se plán začne řídit tím, co ti jde a co ne.',
+                'The app knows nothing about you yet, so it starts from the basics. After the placement test or the first problems the plan starts following what you can and cannot do.',
+              )
+            : t(
+                'Plán zatím vychází jen z nastavené kapitoly. Po prvních úlohách se začne řídit tím, co ti jde a co ne.',
+                'For now the plan is based only on the chapter that is set. After the first problems it starts following what you can and cannot do.',
+              )}
         </p>
       )}
     </Card>
@@ -299,7 +347,7 @@ function ActivityCard({ data }: { data: DashboardDto }) {
       )}
       <p className="mt-2 text-xs text-ink-3">
         {t(
-          'Volný den se použije sám, když jeden den vynecháš. Získáš ho za každých šest aktivních dní.',
+          'Volný den se použije automaticky, když jeden den vynecháš. Získáš ho za každých šest aktivních dní.',
           'A rest day is used automatically when you skip a day. You earn one for every six active days.',
         )}
       </p>
@@ -367,6 +415,160 @@ function DayPanel({ day }: { day: string }) {
           </>
         ))}
     </div>
+  );
+}
+
+// ------------------------------------------------------------------------ entrance goals
+
+/** The single next step, with the reason it was chosen and what the skill still needs. */
+function NextCard({ data }: { data: DashboardDto }) {
+  const t = useT();
+  const next = data.entrance?.next ?? null;
+  const gates = data.focus.nextSkill;
+  return (
+    <Card className="p-5">
+      <SectionLabel
+        action={
+          <Link to="/map" className="text-xs">
+            {t('mapa učiva', 'curriculum map')}
+          </Link>
+        }
+      >
+        {t('Další krok', 'Next step')}
+      </SectionLabel>
+      {next ? (
+        <>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Link to={`/concept/${next.skill.id}`} className="font-medium text-ink">
+              {t(next.skill.title)}
+            </Link>
+            <Badge>{t(PURPOSE_NAMES[next.purpose])}</Badge>
+          </div>
+          <p className="mt-1.5 text-sm text-ink-2">
+            {whyText({ purpose: next.purpose, because: next.because, forSkill: next.forSkill }, t)}
+          </p>
+          {gates?.next && gates.id === next.skill.id && (
+            <div className="mt-4 border-t border-border pt-4">
+              <div className="text-[13px] text-ink-2">
+                {t('Co ještě chybí k úrovni', 'What is still needed for')} „{t(LEVEL_NAMES[gates.next.level])}“:
+              </div>
+              <Gates level={gates.next.level} gates={gates.next.gates} className="mt-2" />
+            </div>
+          )}
+        </>
+      ) : (
+        <p className="mt-2 text-sm text-ink-2">
+          {t(
+            'Všechno, co jde procvičovat, je zvládnuté a nic není na opakování. Zkus test nanečisto.',
+            'Everything that can be practised is mastered and nothing is due. Try a timed practice test.',
+          )}
+        </p>
+      )}
+    </Card>
+  );
+}
+
+/** Work set by a teacher, with whose it is: nothing here appears without the learner seeing from whom. */
+function AssignmentsCard({ data }: { data: DashboardDto }) {
+  const t = useT();
+  const me = useMe();
+  const { start, busy, error } = useStarter();
+  const assignments = data.assignments;
+  const teachers = me.data?.teachers ?? [];
+  if (assignments.length === 0 && teachers.length === 0) return null;
+  const open = assignments.filter((entry) => entry.status === 'open');
+  const closed = assignments.filter((entry) => entry.status === 'done').slice(0, 2);
+  const row = (entry: AssignmentDto) => (
+    <li key={entry.id} className="py-2.5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-medium">{t(ASSIGNMENT_NAMES[entry.kind])}</div>
+          {entry.skills.length > 0 && (
+            <div className="truncate text-[13px] text-ink-2">
+              {entry.skills.map((skill) => t(skill.title)).join(' · ')}
+            </div>
+          )}
+          {entry.note && <div className="mt-0.5 text-[13px] text-ink-2">„{entry.note}“</div>}
+          <div className="mt-0.5 text-xs text-ink-3">
+            {entry.createdBy}
+            {entry.dueDay && ` · ${t('do', 'by')} ${formatDay(entry.dueDay, t.locale)}`}
+            {entry.result && ` · ${entry.result.solved}/${entry.result.problems} ${t('vyřešeno', 'solved')}`}
+          </div>
+        </div>
+        {entry.status === 'open' ? (
+          <Button
+            size="sm"
+            busy={busy === entry.id}
+            onClick={() => void start(entry.id, `/api/assignments/${entry.id}/start`)}
+            className="shrink-0"
+          >
+            {entry.result ? t('Pokračovat', 'Continue') : t('Spustit', 'Start')}
+          </Button>
+        ) : (
+          <span className="flex shrink-0 items-center gap-1 text-xs text-ink-3">
+            <Check size={13} style={{ color: 'var(--good)' }} aria-hidden />
+            {t('hotovo', 'done')}
+          </span>
+        )}
+      </div>
+    </li>
+  );
+  return (
+    <Card className="p-5">
+      <SectionLabel>{t('Zadaná práce', 'Assigned work')}</SectionLabel>
+      {open.length + closed.length === 0 ? (
+        <p className="mt-2 text-sm text-ink-2">{t('Teď není nic zadáno.', 'Nothing is assigned at the moment.')}</p>
+      ) : (
+        <ul className="mt-1 divide-y divide-border">{[...open, ...closed].map(row)}</ul>
+      )}
+      {error !== null && (
+        <div className="mt-2">
+          <ErrorNote error={error} />
+        </div>
+      )}
+      {teachers.length > 0 && (
+        <p className="mt-3 border-t border-border pt-3 text-xs text-ink-3">
+          {t(
+            'Tvou práci v aplikaci vidí a může ti zadávat úlohy: ',
+            'Your work in the app can be seen, and work set for you, by: ',
+          )}
+          <span className="font-mono text-ink-2">{teachers.join(', ')}</span>
+        </p>
+      )}
+    </Card>
+  );
+}
+
+/** Readiness in brief: the verdict in words and the six parts, each with its base. */
+function ReadinessCard({ data }: { data: DashboardDto }) {
+  const t = useT();
+  const readiness = data.entrance?.readiness;
+  if (!readiness) return null;
+  const countdown = examCountdown(readiness, t);
+  return (
+    <Card className="p-5">
+      <SectionLabel
+        action={
+          <Link to="/readiness" className="text-xs">
+            {t('podrobně', 'in detail')}
+          </Link>
+        }
+      >
+        {t('Připravenost na zkoušku', 'Readiness for the examination')}
+      </SectionLabel>
+      <div className="mt-2 font-medium">{t(READINESS_NAMES[readiness.verdict])}</div>
+      <div className="mt-0.5 text-[13px] text-ink-2">
+        {countdown ?? (
+          <Link to="/settings#goal" className="text-ink-2">
+            {t('Nastavit termín zkoušky', 'Set the examination date')}
+          </Link>
+        )}
+      </div>
+      <ReadinessParts readiness={readiness} className="mt-4" />
+      <p className="mt-3 text-xs text-ink-3">
+        {t('Žádný z údajů není pravděpodobnost přijetí.', 'None of these figures is a probability of admission.')}
+      </p>
+    </Card>
   );
 }
 
@@ -567,6 +769,7 @@ function RecentCard({ data }: { data: DashboardDto }) {
 function FitCard({ data }: { data: DashboardDto }) {
   const t = useT();
   const { fit } = data;
+  if (!fit) return null;
   return (
     <Card className="p-5">
       <SectionLabel>{t('Směr FIT VUT', 'Towards FIT VUT')}</SectionLabel>
@@ -580,7 +783,9 @@ function FitCard({ data }: { data: DashboardDto }) {
         </div>
         <div>
           <div className="flex items-baseline justify-between gap-3 text-sm">
-            <span>{t('Látka, kterou FIT sám opakuje v ISM', 'What FIT itself revises in its ISM seminar')}</span>
+            <span>
+              {t('Látka, kterou si FIT opakuje v semináři ISM', 'What FIT itself revises in its ISM seminar')}
+            </span>
             <span className="text-ink-2">{pct(fit.bridgeCoverage, t.locale)}</span>
           </div>
           <Meter value={fit.bridgeCoverage} className="mt-1.5" />

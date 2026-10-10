@@ -17,11 +17,13 @@ import { ParseError, parse, type ParseOptions } from '../math/parse';
 import { toTex } from '../math/tex';
 import {
   ALGEBRAIC_FORM,
+  AS_FRACTION,
   AMBIGUOUS_COMMA,
   CHOOSE_OPTION,
   FINISH_COMPUTING,
   GIVE_EXACT,
   IN_RADIANS,
+  REDUCE_FRACTION,
   NOT_A_NUMBER,
   POINT_DIMENSIONS,
   describeIntervalError,
@@ -622,6 +624,35 @@ function isAlgebraicForm(node: Node): boolean {
   return isRealTerm(node);
 }
 
+/** A whole number written as one: 7, -7, (−7). */
+function integerOf(node: Node): number | null {
+  if (node.t === 'num') return Number.isInteger(node.v) ? node.v : null;
+  if (node.t === 'neg') {
+    const inner = integerOf(node.a);
+    return inner === null ? null : -inner;
+  }
+  return null;
+}
+
+/**
+ * How a number is written, for answers that must be in lowest terms: a whole number or
+ * p/q with nothing left to cancel is 'reduced'; p/q with a common factor is 'reducible';
+ * anything else — a decimal, a sum, a mixed number — is 'other'.
+ */
+function fractionForm(node: Node): 'reduced' | 'reducible' | 'other' {
+  if (integerOf(node) !== null) return 'reduced';
+  if (node.t === 'neg') return fractionForm(node.a);
+  if (node.t === 'bin' && node.op === '/') {
+    const p = integerOf(node.a);
+    const q = integerOf(node.b);
+    if (p === null || q === null || q === 0) return 'other';
+    let [a, b] = [Math.abs(p), Math.abs(q)];
+    while (b !== 0) [a, b] = [b, a % b];
+    return a === 1 && Math.abs(q) !== 1 ? 'reduced' : 'reducible';
+  }
+  return 'other';
+}
+
 /**
  * Check a learner's input against a problem's answer.
  *
@@ -662,6 +693,11 @@ export function checkAnswer(
   if (sameParsed(spec, candidate, reference)) {
     if (spec.kind === 'expr' && spec.form && candidate.kind === 'expr' && !hasForm(candidate.node, spec.form)) {
       return { verdict: 'invalid', message: wrongForm(spec.form) };
+    }
+    if (spec.kind === 'number' && spec.form === 'reduced' && candidate.kind === 'number') {
+      const form = fractionForm(candidate.node);
+      if (form !== 'reduced')
+        return { verdict: 'invalid', message: form === 'reducible' ? REDUCE_FRACTION : AS_FRACTION };
     }
     return { verdict: 'correct' };
   }

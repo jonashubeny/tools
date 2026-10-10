@@ -19,7 +19,7 @@ import { Link } from 'react-router';
 import { api } from '../app/api';
 import { Gates } from '../app/components';
 import { useT } from '../app/i18n';
-import { CONTEXT_NAMES, FAMILY_NAMES, KIND_NAMES, LEVEL_NAMES } from '../app/labels';
+import { CONTEXT_NAMES, FAMILY_NAMES, KIND_NAMES, LEVEL_NAMES, PURPOSE_NAMES, whyText } from '../app/labels';
 import { useMilestones } from '../app/queries';
 import { Figure } from '../figure/Figure';
 import { cn } from '../lib/cn';
@@ -53,6 +53,8 @@ export function ProblemView({ problem, settings, onChange, onNext, nextLabel, co
   const [elapsed, setElapsed] = useState(0);
   const startedAt = useRef(performance.now());
   const open = problem.status === 'open';
+  // A placement test: one answer, no help, and nothing said about it until the test is over.
+  const placement = problem.context === 'diagnostic';
 
   // A new problem starts a new clock and clears what belonged to the previous one.
   useEffect(() => {
@@ -141,6 +143,13 @@ export function ProblemView({ problem, settings, onChange, onNext, nextLabel, co
         )}
       </div>
 
+      {problem.why && (
+        <p className="mb-3 text-[13px] text-ink-3">
+          <span className="font-medium text-ink-2">{t('Proč tahle úloha: ', 'Why this problem: ')}</span>
+          {whyText(problem.why, t)} <span className="font-mono text-xs">({t(PURPOSE_NAMES[problem.why.purpose])})</span>
+        </p>
+      )}
+
       <div className="text-[1.0625rem] leading-relaxed">
         <RichText text={t(problem.prompt)} />
       </div>
@@ -176,7 +185,7 @@ export function ProblemView({ problem, settings, onChange, onNext, nextLabel, co
 
       {open && problem.previousInputs.length > 0 && (
         <div className="mt-3 text-[13px] text-ink-3">
-          {t('Už jsi zkusil: ', 'Already tried: ')}
+          {t('Předchozí pokusy: ', 'Already tried: ')}
           {problem.previousInputs.map((input, index) => (
             <code key={index} className="mr-1.5 rounded border border-border bg-surface-2 px-1.5 py-0.5 text-ink-2">
               {input}
@@ -243,7 +252,7 @@ export function ProblemView({ problem, settings, onChange, onNext, nextLabel, co
                 : `${t('Nápověda', 'Hint')} ${problem.hints.length + 1}/${problem.hintCount}`}
             </Button>
           )}
-          {tutor.enabled && (
+          {tutor.enabled && !placement && (
             <Button
               size="sm"
               onClick={() => tutor.open({ problemId: problem.id, concept: problem.concept ?? undefined })}
@@ -254,7 +263,12 @@ export function ProblemView({ problem, settings, onChange, onNext, nextLabel, co
             </Button>
           )}
           <span className="flex-1" />
-          {confirmReveal ? (
+          {placement ? (
+            // No shame in it and no second question: in a placement test this is an answer like any other.
+            <Button size="sm" onClick={() => void reveal()} disabled={busy}>
+              {t('Tohle neumím', 'I do not know this')}
+            </Button>
+          ) : confirmReveal ? (
             <span className="flex flex-wrap items-center gap-2 text-[13px] text-ink-2">
               {t('Zapíše se jako nevyřešená.', 'It will be recorded as not solved.')}
               <Button size="sm" variant="danger" onClick={() => void reveal()} disabled={busy}>
@@ -277,6 +291,23 @@ export function ProblemView({ problem, settings, onChange, onNext, nextLabel, co
         <div className="mt-3">
           <ErrorNote error={failure} />
         </div>
+      )}
+
+      {problem.status === 'recorded' && (
+        <section className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-surface-2 p-4">
+          <span className="text-sm text-ink-2">
+            {t(
+              'Zaznamenáno. Co bylo správně, uvidíš po skončení testu.',
+              'Recorded. What was right is shown once the test is over.',
+            )}
+          </span>
+          {onNext && (
+            <Button variant="primary" size="lg" onClick={onNext} autoFocus>
+              {nextLabel ?? t('Další úloha', 'Next problem')}
+              <ArrowRight size={15} />
+            </Button>
+          )}
+        </section>
       )}
 
       {problem.outcome && (
@@ -426,10 +457,15 @@ function TextEntry({
               'Očekává se úhel v radiánech, např. 5π/6 (piš „pi“ nebo π).',
               'An angle in radians is expected, e.g. 5π/6 (type “pi” or π).',
             )
-          : t(
-              'Očekává se číslo; může to být zlomek nebo výraz s odmocninou.',
-              'A number is expected; a fraction or a root is fine.',
-            ),
+          : spec.kind === 'number' && spec.form === 'reduced'
+            ? t(
+                'Očekává se celé číslo nebo zlomek v základním tvaru, např. 3/4.',
+                'A whole number or a fraction in lowest terms is expected, e.g. 3/4.',
+              )
+            : t(
+                'Očekává se číslo; může to být zlomek nebo výraz s odmocninou.',
+                'A number is expected; a fraction or a root is fine.',
+              ),
     expr: t('Očekává se výraz.', 'An expression is expected.'),
     set:
       spec.kind === 'set' && spec.unit === 'rad'

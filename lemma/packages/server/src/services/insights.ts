@@ -4,15 +4,21 @@ import {
   SYLLABUS,
   SYLLABUS_BOOKS,
   SYLLABUS_META,
+  conceptsOfGoal,
   generatorsFor,
   getConcept,
+  getGoal,
   getLesson,
+  getSpecItem,
   getSyllabusTopic,
+  goalSkillOf,
   staticProblemsFor,
   topLevelOf,
 } from '@lemma/content';
 import {
+  AREAS,
   type AnalyticsDto,
+  type Area,
   type ConceptDetailDto,
   type ErrorFamily,
   type ErrorSummaryDto,
@@ -38,7 +44,7 @@ import {
 } from '@lemma/core';
 import { fromJson } from '../db';
 import { achievedMilestones, dayScores, streakSummary } from './activity';
-import { type Ctx, dayOf, getSettings, notFound, today } from './context';
+import { type Ctx, dayOf, getSettings, goalOf, notFound, today } from './context';
 import { allSkills, lessonDoneSet, loadStates, skillDto, stateOf, topicDtos } from './learner';
 import { type ProblemRow, snapshotOf } from './practice';
 
@@ -46,9 +52,11 @@ import { type ProblemRow, snapshotOf } from './practice';
 
 export function graph(ctx: Ctx): GraphDto {
   const skills = allSkills(ctx);
+  const settings = getSettings(ctx);
   return {
     skills,
-    topics: topicDtos(skills, getSettings(ctx).currentTopic),
+    // Chapters belong to the school syllabus; an examination goal is grouped by area instead.
+    topics: getGoal(settings.goal).kind === 'school' ? topicDtos(skills, settings.currentTopic) : [],
     syllabus: {
       schoolYear: SYLLABUS_META.schoolYear,
       hoursPerWeek: SYLLABUS_META.hoursPerWeek,
@@ -66,7 +74,11 @@ export function conceptDetail(ctx: Ctx, id: string): ConceptDetailDto {
   const states = loadStates(ctx);
   const done = lessonDoneSet(ctx);
   const now = ctx.now();
+  const goal = goalOf(ctx);
+  const inGoal = new Set(conceptsOfGoal(goal).map((other) => other.id));
   const state = stateOf(states, id);
+  const stored = states.get(id);
+  const evidence = goalSkillOf(goal, id);
   const lesson = getLesson(id);
   const progress = ctx.db.prepare('SELECT step, done FROM lesson_progress WHERE concept = ?').get(id) as
     { step: number; done: number } | undefined;
@@ -80,13 +92,15 @@ export function conceptDetail(ctx: Ctx, id: string): ConceptDetailDto {
     .all(id) as { error: string; n: number }[];
 
   return {
-    ...skillDto(concept, states, done, now),
+    ...skillDto(concept, states, done, now, goal),
     why: concept.why ?? {},
     terms: concept.terms ?? [],
     resources: [...(concept.resources ?? []), ...(topic?.resources ?? [])],
     lab: concept.lab ?? null,
     next: nextLevelGates(state, topLevelOf(concept.id)),
-    unlocks: dependentsOf(CONCEPTS, id).map((other) => ({ id: other, title: getConcept(other)!.title })),
+    unlocks: dependentsOf(CONCEPTS, id)
+      .filter((other) => inGoal.has(other) || !inGoal.has(id))
+      .map((other) => ({ id: other, title: getConcept(other)!.title })),
     prereqDetails: concept.prereqs.map((pre) => {
       const preState = states.get(pre);
       return {
@@ -123,6 +137,24 @@ export function conceptDetail(ctx: Ctx, id: string): ConceptDetailDto {
       ...staticProblemsFor(id).map((p) => ({ id: p.id, title: p.title, kind: p.kind, levels: [p.level] as Level[] })),
     ],
     topicTitle: topic?.title ?? null,
+    spec: (concept.spec ?? []).flatMap((item) => {
+      const found = getSpecItem(item);
+      return found ? [{ id: found.id, text: found.summary }] : [];
+    }),
+    evidence: evidence ? { ...evidence.tasks, papersRead: getGoal(goal).papersRead } : null,
+    record: {
+      firstTry: stored?.firstTry ?? 0,
+      hinted: stored?.hinted ?? 0,
+      guessed: stored?.guessed ?? 0,
+      families: stored?.families.length ?? 0,
+      familyCap: stored?.familyCap ?? 0,
+      timed: stored?.timed ?? { attempts: 0, solved: 0 },
+      reviews: stored?.reviews ?? { passed: 0, failed: 0 },
+      days: stored?.days ?? 0,
+      lastSuccessAt: stored?.lastSuccessAt ?? null,
+      diagnosed: stored?.diagnosed ?? 0,
+      placed: stored !== undefined && stored.placement !== null,
+    },
   };
 }
 
@@ -192,11 +224,14 @@ export function errorSummary(ctx: Ctx, windowDays = 30): ErrorSummaryDto {
     if (error) entry[ERROR_FAMILY[error]]++;
   }
 
-  const topics = new Map<number | null, { counts: Partial<Record<ErrorType, number>>; total: number }>();
+  // Where the errors happen: by chapter for the school syllabus, by area of mathematics otherwise.
+  const byArea = getGoal(goalOf(ctx)).kind === 'entrance';
+  const topics = new Map<number | Area | null, { counts: Partial<Record<ErrorType, number>>; total: number }>();
   for (const row of recent) {
     const error = errorOf(row);
     if (!error) continue;
-    const topic = getConcept(row.skill)?.syllabusTopic ?? null;
+    const concept = getConcept(row.skill);
+    const topic = byArea ? (concept?.area ?? null) : (concept?.syllabusTopic ?? null);
     const entry = topics.get(topic) ?? { counts: {}, total: 0 };
     entry.counts[error] = (entry.counts[error] ?? 0) + 1;
     entry.total++;
@@ -286,15 +321,20 @@ export function errorSummary(ctx: Ctx, windowDays = 30): ErrorSummaryDto {
     byFamily,
     weekly: [...weeks.entries()].map(([week, entry]) => ({ week, ...entry })),
     byTopic: [...topics.entries()]
-      .map(([topic, entry]) => ({
-        topic,
-        title:
-          topic !== null
-            ? (getSyllabusTopic(topic)?.title ?? L(`${topic}`, `${topic}`))
-            : L('Mimo sylabus', 'Outside the syllabus'),
-        counts: entry.counts,
-        total: entry.total,
-      }))
+      .map(([topic, entry]) =>
+        typeof topic === 'string'
+          ? // The interface has the names of the areas; the title is only a fallback.
+            { topic: null, title: L(topic, topic), area: topic, counts: entry.counts, total: entry.total }
+          : {
+              topic,
+              title:
+                topic !== null
+                  ? (getSyllabusTopic(topic)?.title ?? L(`${topic}`, `${topic}`))
+                  : L('Mimo sylabus', 'Outside the syllabus'),
+              counts: entry.counts,
+              total: entry.total,
+            },
+      )
       .sort((a, b) => b.total - a.total),
     recent: mistakes,
     trends,
@@ -389,7 +429,43 @@ export function analytics(ctx: Ctx): AnalyticsDto {
   const skills = allSkills(ctx, states);
   for (const skill of skills) levels[skill.level]++;
 
-  const topics = SYLLABUS.map((topic) => {
+  const firstTryRate = (list: ProblemRow[]): number | null =>
+    ratio(list.filter((row) => row.first_try === 1).length, list.length);
+  const areas: AnalyticsDto['areas'] = AREAS.flatMap((area) => {
+    const areaSkills = skills.filter((skill) => skill.area === area);
+    if (areaSkills.length === 0) return [];
+    const ids = new Set(areaSkills.map((skill) => skill.id));
+    const list = rows.filter((row) => ids.has(row.skill));
+    return [
+      {
+        area,
+        skills: areaSkills.length,
+        progress: areaSkills.reduce((sum, skill) => sum + skill.progress, 0) / areaSkills.length,
+        attempts: list.length,
+        accuracy: ratio(list.filter((row) => row.status === 'solved').length, list.length),
+        firstTry: firstTryRate(list),
+      },
+    ];
+  });
+
+  // Timed work and untimed practice measure different things, and are kept apart.
+  const measure = (list: ProblemRow[]): AnalyticsDto['timed']['timed'] => ({
+    problems: list.length,
+    accuracy: ratio(list.filter((row) => row.status === 'solved').length, list.length),
+    firstTry: firstTryRate(list),
+    medianPace: median(
+      list
+        .filter((row) => row.status === 'solved' && row.est_seconds > 0 && (row.seconds ?? 0) > 0)
+        .map((row) => row.seconds! / row.est_seconds),
+    ),
+  });
+  const timed: AnalyticsDto['timed'] = {
+    untimed: measure(rows.filter((row) => row.context !== 'exam' && row.context !== 'diagnostic')),
+    timed: measure(rows.filter((row) => row.context === 'exam')),
+  };
+
+  const schoolGoal = getGoal(goalOf(ctx)).kind === 'school';
+  const topics = (schoolGoal ? SYLLABUS : []).map((topic) => {
     const ids = new Set(CONCEPTS.filter((concept) => concept.syllabusTopic === topic.n).map((concept) => concept.id));
     const list = rows.filter((row) => ids.has(row.skill));
     const topicSkills = skills.filter((skill) => ids.has(skill.id));
@@ -403,7 +479,7 @@ export function analytics(ctx: Ctx): AnalyticsDto {
     };
   });
 
-  const contexts = (['lesson', 'blocked', 'mixed', 'drill', 'challenge', 'exam'] as PracticeContext[])
+  const contexts = (['lesson', 'blocked', 'mixed', 'drill', 'challenge', 'exam', 'diagnostic'] as PracticeContext[])
     .map((context) => {
       const list = rows.filter((row) => row.context === context);
       return { context, problems: list.length, accuracy: ratio(list.filter(isUnaidedRow).length, list.length) };
@@ -413,12 +489,10 @@ export function analytics(ctx: Ctx): AnalyticsDto {
   const cards = [...states.values()].filter((state) => state.card !== null && state.card.lastReview !== null);
   const retentions = cards.map((state) => retrievability(state.card, now)).filter((r): r is number => r !== null);
 
-  const reviewsPassed = rows.filter((row) => row.review_passed === 1).length;
-  const reviewsFailed = (
-    ctx.db
-      .prepare(`SELECT COUNT(*) AS n FROM problems WHERE status = 'failed' AND context IN ('mixed', 'exam')`)
-      .get() as { n: number }
-  ).n;
+  // Reviews are what the learner model counts as such: an attempt on a skill whose scheduled
+  // review had come due. Readiness reports the same counters, so the two pages agree.
+  const reviewsPassed = [...states.values()].reduce((sum, state) => sum + state.reviews.passed, 0);
+  const reviewsFailed = [...states.values()].reduce((sum, state) => sum + state.reviews.failed, 0);
 
   const milestones = achievedMilestones(ctx);
   const bestDay = [...scores.entries()].sort((a, b) => b[1] - a[1])[0];
@@ -461,6 +535,8 @@ export function analytics(ctx: Ctx): AnalyticsDto {
     weekly,
     levels,
     topics,
+    areas,
+    timed,
     contexts,
     retention: {
       due: cards.filter((state) => isDue(state.card, now)).length,

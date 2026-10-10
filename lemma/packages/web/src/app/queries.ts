@@ -1,23 +1,35 @@
 import type {
   AnalyticsDto,
+  AssignmentDto,
+  CompareDto,
   ConceptDetailDto,
+  CurriculumDto,
   DashboardDto,
   DayDetailDto,
+  DiagnosticDto,
   ErrorSummaryDto,
   ExamBlueprint,
   ExamDto,
   ExamListItemDto,
   FitDto,
   ForgeDto,
+  GoalDto,
   GraphDto,
+  HistoryItemDto,
   LessonDto,
   MeDto,
   MilestoneDef,
   MissionDto,
   PlanDto,
+  ReadinessDto,
   RunDto,
+  StudentDetailDto,
+  StudentSummaryDto,
+  TeachBriefDto,
+  TeachSessionDto,
   TutorThreadDto,
   UserDto,
+  WorkedExampleDto,
 } from '@lemma/core';
 import { type QueryClient, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback } from 'react';
@@ -58,12 +70,82 @@ export const useMissions = () =>
 export const useForge = () => useQuery({ queryKey: ['forge'], queryFn: () => api.get<ForgeDto>('/api/forge') });
 export const useExams = () =>
   useQuery({ queryKey: ['exams'], queryFn: () => api.get<ExamListItemDto[]>('/api/exams') });
+/** The tests offered to the learner: they depend on the goal, so they are refetched like anything else. */
 export const useBlueprints = () =>
+  useQuery({ queryKey: ['blueprints'], queryFn: () => api.get<ExamBlueprint[]>('/api/exam-blueprints') });
+
+// ------------------------------------------------------------------ goals and the path
+
+/** The goals there are to choose from. The same for everybody, and fixed for a version of the app. */
+export const useGoals = () =>
+  useQuery({ queryKey: ['goals'], queryFn: () => api.get<GoalDto[]>('/api/goals'), staleTime: Infinity });
+export const useCurriculum = () =>
+  useQuery({ queryKey: ['curriculum'], queryFn: () => api.get<CurriculumDto>('/api/curriculum') });
+export const useReadiness = () =>
+  useQuery({ queryKey: ['readiness'], queryFn: () => api.get<ReadinessDto>('/api/readiness') });
+export const useDiagnostics = () =>
+  useQuery({ queryKey: ['diagnostics'], queryFn: () => api.get<DiagnosticDto[]>('/api/diagnostics') });
+export const useDiagnostic = (id: string | undefined) =>
   useQuery({
-    queryKey: ['blueprints'],
-    queryFn: () => api.get<ExamBlueprint[]>('/api/exam-blueprints'),
+    queryKey: ['diagnostic', id],
+    queryFn: () => api.get<DiagnosticDto>(`/api/diagnostics/${encodeURIComponent(id!)}`),
+    enabled: Boolean(id),
+  });
+export const useAssignments = () =>
+  useQuery({ queryKey: ['assignments'], queryFn: () => api.get<AssignmentDto[]>('/api/assignments') });
+/** A solved example of a skill; asking for it counts as having been introduced to the skill. */
+export const useExample = (id: string | undefined, n: number, enabled: boolean) =>
+  useQuery({
+    queryKey: ['example', id, n],
+    queryFn: () => api.get<WorkedExampleDto>(`/api/concepts/${encodeURIComponent(id!)}/example?n=${n}`),
+    enabled: Boolean(id) && enabled,
     staleTime: Infinity,
   });
+
+// ----------------------------------------------------------------------------- teaching
+
+const student = (name: string): string => `/api/teach/students/${encodeURIComponent(name)}`;
+
+export const useStudents = (enabled = true) =>
+  useQuery({
+    queryKey: ['teach', 'students'],
+    queryFn: () => api.get<StudentSummaryDto[]>('/api/teach/students'),
+    enabled,
+  });
+export const useStudent = (name: string | undefined) =>
+  useQuery({
+    queryKey: ['teach', 'student', name],
+    queryFn: () => api.get<StudentDetailDto>(student(name!)),
+    enabled: Boolean(name),
+  });
+export const useStudentHistory = (name: string | undefined, query: string) =>
+  useQuery({
+    queryKey: ['teach', 'history', name, query],
+    queryFn: () => api.get<HistoryItemDto[]>(`${student(name!)}/history?${query}`),
+    enabled: Boolean(name),
+  });
+export const useStudentConcept = (name: string | undefined, id: string | null) =>
+  useQuery({
+    queryKey: ['teach', 'concept', name, id],
+    queryFn: () => api.get<ConceptDetailDto>(`${student(name!)}/concepts/${encodeURIComponent(id!)}`),
+    enabled: Boolean(name) && id !== null,
+  });
+export const useCompare = (enabled = true) =>
+  useQuery({ queryKey: ['teach', 'compare'], queryFn: () => api.get<CompareDto>('/api/teach/compare'), enabled });
+export const useBrief = (name: string | undefined) =>
+  useQuery({
+    queryKey: ['teach', 'brief', name],
+    queryFn: () => api.get<TeachBriefDto>(`${student(name!)}/brief`),
+    enabled: Boolean(name),
+  });
+export const useTeachSession = (name: string | undefined, id: string | undefined) =>
+  useQuery({
+    queryKey: ['teach', 'session', name, id],
+    queryFn: () => api.get<TeachSessionDto>(`${student(name!)}/sessions/${encodeURIComponent(id!)}`),
+    enabled: Boolean(name) && Boolean(id),
+    refetchOnWindowFocus: false,
+  });
+export const studentUrl = student;
 export const useExam = (id: string | undefined) =>
   useQuery({
     queryKey: ['exam', id],
@@ -101,7 +183,7 @@ export const useUsers = (enabled: boolean) =>
  * flashes up for the next one in the same browser.
  */
 export function forgetLearner(client: QueryClient): Promise<void> {
-  client.removeQueries({ predicate: (query) => query.queryKey[0] !== 'me' && query.queryKey[0] !== 'blueprints' });
+  client.removeQueries({ predicate: (query) => query.queryKey[0] !== 'me' && query.queryKey[0] !== 'goals' });
   return client.invalidateQueries({ queryKey: ['me'] });
 }
 
@@ -109,6 +191,6 @@ export function forgetLearner(client: QueryClient): Promise<void> {
 export function useRefresh(): () => void {
   const client = useQueryClient();
   return useCallback(() => {
-    void client.invalidateQueries({ predicate: (query) => query.queryKey[0] !== 'blueprints' });
+    void client.invalidateQueries({ predicate: (query) => query.queryKey[0] !== 'goals' });
   }, [client]);
 }

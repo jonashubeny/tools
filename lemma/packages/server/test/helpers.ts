@@ -1,8 +1,10 @@
-import { type AnswerSpec, type ProblemInstance, canonicalInput } from '@lemma/core';
+import { type ProblemInstance, canonicalInput } from '@lemma/core';
 import type { Hono } from 'hono';
+import { Accounts } from '../src/accounts';
 import { createApp } from '../src/app';
 import { type Config, loadConfig } from '../src/config';
 import { type Db, migrate, openDatabase } from '../src/db';
+import { wrongAnswerFor } from '../src/dev/personas';
 import { setLogLevel } from '../src/log';
 import type { Ctx } from '../src/services/context';
 import type { Provider } from '../src/services/tutor/types';
@@ -12,7 +14,10 @@ export interface Harness {
   app: Hono;
   db: Db;
   config: Config;
+  /** The administrator's context: the one learner of an instance without accounts. */
   ctx: Ctx;
+  /** The accounts of the instance, for reaching a user's own data in a test. */
+  accounts: Accounts;
   /** Move the clock forward. */
   advance: (ms: number) => void;
   setTime: (ms: number) => void;
@@ -49,7 +54,8 @@ export function harness(options: { auth?: boolean; provider?: Provider; env?: Re
   migrate(db);
   let clock = START;
   const now = (): number => clock;
-  const app = createApp({ db, config, now, tutorProvider: options.provider }) as unknown as Hono;
+  const accounts = new Accounts(db, config, now);
+  const app = createApp({ db, config, now, accounts, tutorProvider: options.provider }) as unknown as Hono;
 
   const read = async <T>(response: Response): Promise<{ status: number; body: T; headers: Headers }> => {
     const text = await response.text();
@@ -67,6 +73,7 @@ export function harness(options: { auth?: boolean; provider?: Provider; env?: Re
     db,
     config,
     ctx: { db, config, now },
+    accounts,
     advance: (ms) => {
       clock += ms;
     },
@@ -94,26 +101,6 @@ export function snapshotOfProblem(db: Db, id: string): ProblemInstance {
 /** The right answer to an issued problem, typed the way a learner would type it. */
 export const rightAnswer = (db: Db, id: string): string => canonicalInput(snapshotOfProblem(db, id).answer);
 
-/** An answer that is well-formed but certainly wrong. */
-export function wrongAnswerFor(spec: AnswerSpec): string {
-  switch (spec.kind) {
-    case 'number':
-    case 'expr':
-    case 'complex':
-      return `(${spec.value}) + 7`;
-    case 'set':
-      return '{123456}';
-    case 'interval':
-      return '(123456; 123457)';
-    case 'point':
-      return `[${spec.coords.map(() => '123456').join('; ')}]`;
-    case 'choice':
-      return spec.options.find((option) => !spec.correct.includes(option.id))!.id;
-    case 'spot':
-      return String((spec.wrongLine + 1) % spec.lines.length);
-    case 'self':
-      return 'no';
-  }
-}
+export { wrongAnswerFor };
 
 export const wrongAnswer = (db: Db, id: string): string => wrongAnswerFor(snapshotOfProblem(db, id).answer);

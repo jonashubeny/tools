@@ -89,13 +89,19 @@ describe('content structure', () => {
       expect(course.url, course.code).toMatch(/^https:\/\/www\.fit\.vut\.cz\/study\/course\/\d+\//);
   });
 
+  /** Everything except what can only be done on paper (geometric constructions). */
+  const practisable = CONCEPTS.filter((concept) => !concept.paperOnly);
+
   it('has problems for every concept, syllabus and enrichment alike', () => {
-    expect(CONCEPTS.filter((c) => !hasProblems(c.id)).map((c) => c.id)).toEqual([]);
+    expect(practisable.filter((c) => !hasProblems(c.id)).map((c) => c.id)).toEqual([]);
     expect(conceptsWithoutProblems(bundle)).toEqual([]);
+    // What is exempt is exempt on purpose, and stays without problems.
+    expect(CONCEPTS.filter((c) => c.paperOnly).map((c) => c.id)).toEqual(['geom.constructions']);
+    expect(hasProblems('geom.constructions')).toBe(false);
   });
 
   it('gives every concept problems at more than one level of difficulty', () => {
-    for (const concept of CONCEPTS) {
+    for (const concept of practisable) {
       const levels = new Set(GENERATORS.filter((g) => g.concept === concept.id).flatMap((g) => g.levels));
       expect(levels.size, `${concept.id} has levels ${[...levels].join(', ')}`).toBeGreaterThanOrEqual(2);
     }
@@ -104,7 +110,7 @@ describe('content structure', () => {
   it('gives every concept problems hard enough to count as evidence of proficiency', () => {
     // "Proficient" needs an unaided solve at level 3. A concept that stops below that
     // could never be more than familiar, whatever the learner did.
-    for (const concept of CONCEPTS) expect(topLevelOf(concept.id) ?? 0, concept.id).toBeGreaterThanOrEqual(3);
+    for (const concept of practisable) expect(topLevelOf(concept.id) ?? 0, concept.id).toBeGreaterThanOrEqual(3);
     // Self-assessed explanations are not evidence and do not raise the ceiling.
     expect(topLevelOf('no.such.concept')).toBeUndefined();
   });

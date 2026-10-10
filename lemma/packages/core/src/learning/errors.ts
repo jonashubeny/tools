@@ -198,8 +198,8 @@ export const ERROR_INFO: Readonly<Record<ErrorType, ErrorInfo>> = {
     ),
   },
   unknown: {
-    title: L('Nevěděl jsem jak', 'Did not know how'),
-    description: L('Nevěděl jsem, jak úlohu začít.', 'I did not know how to start.'),
+    title: L('Nevím, jak na to', 'Did not know how'),
+    description: L('Nebylo jasné, jak úlohu začít.', 'It was not clear how to start.'),
     remedy: L(
       'To není chyba, ale informace. Projdi si lekci k pojmu a zkus řešený příklad.',
       'That is information, not a mistake. Open the lesson and study a worked example.',

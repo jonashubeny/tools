@@ -1,6 +1,6 @@
 import type { Diagnosis } from '../answer/check';
 import type { Level } from '../content/types';
-import { CREDIT, DAY_MS, ELO, GATES, LEVEL_DIFFICULTY, RETENTION, SLIP } from './constants';
+import { CREDIT, DAY_MS, ELO, GATES, LEVEL_DIFFICULTY, RETENTION, SLIP, UNCERTAINTY } from './constants';
 import { ERROR_FAMILY, type ErrorFamily, type ErrorType } from './errors';
 import { type ReviewCard, ratingFor, retrievability, reviewCard } from './scheduler';
 
@@ -19,7 +19,8 @@ export type PracticeContext =
   | 'mixed' // interleaved review, topic hidden
   | 'drill' // Error Lab drill
   | 'challenge' // a single harder problem
-  | 'exam'; // timed, no hints, no feedback
+  | 'exam' // timed, no hints, no feedback
+  | 'diagnostic'; // placement: topic hidden, no hints, no feedback until the end
 
 export const MASTERY_LEVELS = ['new', 'introduced', 'practising', 'familiar', 'proficient', 'mastered'] as const;
 export type MasteryName = (typeof MASTERY_LEVELS)[number];
@@ -65,6 +66,34 @@ export interface SkillState {
   level: MasteryLevel;
   /** When the current level was reached. */
   levelAt: number | null;
+  /** Solved at the first submission, with or without a hint. */
+  firstTry: number;
+  /** Resolved with at least one hint (or the tutor's help). */
+  hinted: number;
+  /** Right first time, but declared a guess or asked as a coin flip: not gate evidence. */
+  guessed: number;
+  /** Problem families with an independent success, oldest first (at most eight). */
+  families: string[];
+  /** How many families the skill offered when it was last practised; 0 if not known. */
+  familyCap: number;
+  /** Under examination conditions. */
+  timed: { attempts: number; solved: number };
+  /** Scheduled reviews that had come due. */
+  reviews: { passed: number; failed: number };
+  /** The last review that had come due was failed. */
+  reviewFailed: boolean;
+  /** Distinct days with an attempt. */
+  days: number;
+  /** Day number of the last attempt, for counting days. */
+  lastDay: number | null;
+  lastSuccessAt: number | null;
+  /** Attempts made in a diagnostic. */
+  diagnosed: number;
+  /**
+   * A prior inferred in a diagnostic from neighbouring skills, while the skill itself has
+   * no attempts. `theta` already carries it; this records that it is an inference.
+   */
+  placement: { theta: number; at: number } | null;
 }
 
 export function emptySkillState(skill: string, priorTheta = 0): SkillState {
@@ -91,6 +120,19 @@ export function emptySkillState(skill: string, priorTheta = 0): SkillState {
     calibration: { sureRight: 0, sureWrong: 0, unsureRight: 0, unsureWrong: 0 },
     level: 0,
     levelAt: null,
+    firstTry: 0,
+    hinted: 0,
+    guessed: 0,
+    families: [],
+    familyCap: 0,
+    timed: { attempts: 0, solved: 0 },
+    reviews: { passed: 0, failed: 0 },
+    reviewFailed: false,
+    days: 0,
+    lastDay: null,
+    lastSuccessAt: null,
+    diagnosed: 0,
+    placement: null,
   };
 }
 
@@ -104,6 +146,16 @@ export function priorTheta(prerequisiteThetas: readonly number[]): number {
 /** Probability of solving an item of the given level unaided. */
 export function predictSuccess(theta: number, level: Level): number {
   return 1 / (1 + Math.exp(LEVEL_DIFFICULTY[level] - theta));
+}
+
+/**
+ * The same for a question that can be answered right by luck: with five options a fifth
+ * of the learners who do not know still get it. A right answer is then less of a surprise
+ * and moves the estimate less; a wrong one says more.
+ */
+export function predictWithChance(theta: number, level: Level, chance = 0): number {
+  const guess = Math.max(0, Math.min(0.9, chance));
+  return guess + (1 - guess) * predictSuccess(theta, level);
 }
 
 export function kFactor(attempts: number): number {
@@ -135,9 +187,22 @@ export interface ResolvedAttempt {
    * top level for lack of a level-4 problem that does not exist.
    */
   ceiling?: Level;
+  /** The problem family (generator or static problem) the attempt belongs to. */
+  family?: string;
+  /** How many families the skill has that count as evidence. */
+  families?: number;
+  /** Probability of a right answer by guessing: 1/5 for five options, 0 for a typed answer. */
+  chance?: number;
 }
 
 export const isUnaided = (a: ResolvedAttempt): boolean => a.solved && a.firstTry && a.hints === 0;
+
+/**
+ * Unaided, and worth counting towards a level: not self-assessed, not a declared guess,
+ * and not a question where a coin would do as well.
+ */
+export const isStrongEvidence = (a: ResolvedAttempt): boolean =>
+  isUnaided(a) && !a.selfAssessed && a.confidence !== 'guess' && (a.chance ?? 0) < CREDIT.COIN_FLIP_CHANCE;
 
 /** Outcome credit q ∈ [0, 1]: independent work is worth more. */
 export function creditOf(a: ResolvedAttempt): number {
@@ -146,7 +211,8 @@ export function creditOf(a: ResolvedAttempt): number {
   return Math.max(CREDIT.SOLVED_FLOOR, Math.min(1, base - CREDIT.HINT_STEP * a.hints));
 }
 
-const hidesTopic = (context: PracticeContext): boolean => context === 'mixed' || context === 'exam';
+const hidesTopic = (context: PracticeContext): boolean =>
+  context === 'mixed' || context === 'exam' || context === 'diagnostic';
 
 function pushWindow<T>(list: readonly T[], item: T, size: number): T[] {
   const out = [...list, item];
@@ -174,17 +240,24 @@ export const hardLevelFor = (wanted: number, ceiling: number | undefined): numbe
 
 /** Fold one finished problem into the skill state. */
 export function applyAttempt(prev: SkillState, a: ResolvedAttempt): AttemptEffect {
-  const predicted = predictSuccess(prev.theta, a.level);
+  const predicted = predictWithChance(prev.theta, a.level, a.chance);
   const credit = creditOf(a);
-  const weight = a.selfAssessed ? CREDIT.SELF_ASSESSED_WEIGHT : 1;
+  const guessed = isUnaided(a) && (a.confidence === 'guess' || (a.chance ?? 0) >= CREDIT.COIN_FLIP_CHANCE);
+  const weight = a.selfAssessed
+    ? CREDIT.SELF_ASSESSED_WEIGHT
+    : a.confidence === 'guess' && a.solved
+      ? CREDIT.GUESSED_WEIGHT
+      : 1;
   const theta = Math.max(
     ELO.THETA_MIN,
     Math.min(ELO.THETA_MAX, prev.theta + kFactor(prev.attempts) * weight * (credit - predicted)),
   );
 
   const gapDays = prev.lastPracticedAt === null ? 0 : (a.at - prev.lastPracticedAt) / DAY_MS;
-  // Self-assessed answers are too soft to count as gate evidence.
-  const unaided = isUnaided(a) && !a.selfAssessed;
+  // Self-assessed answers and guesses are too soft to count as gate evidence.
+  const unaided = isStrongEvidence(a);
+  const dayNumber = Math.floor(a.at / DAY_MS);
+  const wasDue = prev.card !== null && prev.card.lastReview !== null && prev.card.due <= a.at;
 
   const state: SkillState = {
     ...prev,
@@ -207,6 +280,28 @@ export function applyAttempt(prev: SkillState, a: ResolvedAttempt): AttemptEffec
     lastPracticedAt: a.at,
     errors: { ...prev.errors },
     calibration: { ...prev.calibration },
+    firstTry: prev.firstTry + (a.solved && a.firstTry ? 1 : 0),
+    hinted: prev.hinted + (a.hints > 0 ? 1 : 0),
+    guessed: prev.guessed + (guessed ? 1 : 0),
+    families:
+      unaided && a.family !== undefined && !prev.families.includes(a.family)
+        ? pushWindow(prev.families, a.family, 8)
+        : prev.families,
+    familyCap: a.families ?? prev.familyCap,
+    timed:
+      a.context === 'exam'
+        ? { attempts: prev.timed.attempts + 1, solved: prev.timed.solved + (a.solved ? 1 : 0) }
+        : prev.timed,
+    reviews: wasDue
+      ? { passed: prev.reviews.passed + (a.solved ? 1 : 0), failed: prev.reviews.failed + (a.solved ? 0 : 1) }
+      : prev.reviews,
+    reviewFailed: wasDue ? !a.solved : prev.reviewFailed && !a.solved,
+    days: prev.days + (prev.lastDay === dayNumber ? 0 : 1),
+    lastDay: dayNumber,
+    lastSuccessAt: a.solved ? a.at : prev.lastSuccessAt,
+    diagnosed: prev.diagnosed + (a.context === 'diagnostic' ? 1 : 0),
+    // The skill now has evidence of its own; what was inferred has done its work.
+    placement: null,
   };
 
   if (a.solved && a.expectedSeconds > 0) {
@@ -225,7 +320,6 @@ export function applyAttempt(prev: SkillState, a: ResolvedAttempt): AttemptEffec
 
   // Only spaced or topic-hidden attempts say something about retention. Repeating a
   // blocked exercise five times in one sitting is one learning event, not five reviews.
-  const wasDue = prev.card !== null && prev.card.lastReview !== null && prev.card.due <= a.at;
   const reviewed = prev.card === null || hidesTopic(a.context) || gapDays >= 1;
   if (reviewed) {
     state.card = reviewCard(
@@ -310,7 +404,7 @@ const recentCredit = (state: SkillState): number => {
 const hasRecentGap = (state: SkillState): boolean =>
   state.recentFamilies.some((family) => family === 'procedure' || family === 'concept');
 
-export type GateKey = 'attempts' | 'ability' | 'recent' | 'mixed' | 'delay' | 'hard' | 'clean';
+export type GateKey = 'attempts' | 'ability' | 'recent' | 'mixed' | 'delay' | 'hard' | 'variety' | 'clean';
 
 export interface GateStatus {
   key: GateKey;
@@ -335,6 +429,10 @@ export function gatesFor(
     ...gate('hard', have, 1),
     level: hardLevelFor(wanted, ceiling),
   });
+  // As many families as asked for, or as the skill has. Where the number of families is
+  // not known (0), nothing is asked: the gate is for content that offers a choice.
+  const variety = (wanted: number): GateStatus =>
+    gate('variety', state.families.length, Math.min(wanted, state.familyCap));
   switch (level) {
     case 0:
       return [];
@@ -354,6 +452,7 @@ export function gatesFor(
         gate('mixed', state.mixedUnaided, GATES.PROFICIENT_MIXED),
         gate('delay', state.delayedShort, 1),
         hard(state.hardCore, GATES.PROFICIENT_HARD_LEVEL),
+        variety(GATES.PROFICIENT_FAMILIES),
       ];
     case 5:
       return [
@@ -361,6 +460,7 @@ export function gatesFor(
         gate('mixed', state.mixedUnaided, GATES.MASTERED_MIXED),
         gate('delay', state.delayedLong, 1),
         hard(state.hardTop, GATES.MASTERED_HARD_LEVEL),
+        variety(GATES.MASTERED_FAMILIES),
         { key: 'clean', done: !hasRecentGap(state), have: hasRecentGap(state) ? 0 : 1, need: 1 },
       ];
   }
@@ -406,6 +506,40 @@ export function progressOf(state: SkillState): number {
       return sum + Math.max(0, Math.min(1, g.need === 0 ? 1 : g.have / g.need));
     }, 0) / next.gates.length;
   return (state.level + Math.min(0.95, partial)) / 5;
+}
+
+// --------------------------------------------------------------------------- uncertainty
+
+/**
+ * How unsure the ability estimate is, on the ability scale. Large with little evidence,
+ * and kept large while the evidence comes from one problem family or one day only.
+ * A heuristic: see UNCERTAINTY.
+ */
+export function uncertaintyOf(state: SkillState): number {
+  let evidence = state.attempts;
+  if (state.familyCap > 1 && state.families.length <= 1) evidence *= UNCERTAINTY.ONE_FAMILY;
+  if (state.days <= 1) evidence *= UNCERTAINTY.ONE_DAY;
+  return Math.max(UNCERTAINTY.MIN, UNCERTAINTY.MAX / Math.sqrt(1 + evidence));
+}
+
+export type EstimateConfidence = 'none' | 'low' | 'medium' | 'high';
+
+/** The same in words the interface can show: how much the estimate can be relied on. */
+export function confidenceOf(state: SkillState | undefined): EstimateConfidence {
+  if (!state || (state.attempts === 0 && state.placement === null)) return 'none';
+  const oneFamily = state.familyCap > 1 && state.families.length < 2;
+  if (state.attempts < UNCERTAINTY.LOW_ATTEMPTS || state.days < 2 || oneFamily) return 'low';
+  if (state.attempts >= UNCERTAINTY.HIGH_ATTEMPTS && state.days >= UNCERTAINTY.HIGH_DAYS && state.delayedShort >= 1)
+    return 'high';
+  return 'medium';
+}
+
+/**
+ * A stored state brought up to the current shape. States are rebuilt from the log when the
+ * model changes, so this only matters for objects built by hand (tests, fixtures).
+ */
+export function withDefaults(state: Partial<SkillState> & { skill: string }): SkillState {
+  return { ...emptySkillState(state.skill), ...state };
 }
 
 // --------------------------------------------------------------------- error inference

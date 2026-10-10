@@ -35,5 +35,10 @@ export * from './learning/streak';
 export * from './learning/select';
 export * from './learning/session';
 export * from './learning/exam';
+export * from './learning/placement';
+export * from './learning/path';
+export * from './learning/priority';
+export * from './learning/diagnostic';
+export * from './learning/readiness';
 
 export * from './api';

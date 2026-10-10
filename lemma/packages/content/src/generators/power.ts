@@ -1,5 +1,5 @@
 import { L, intervalIn, intervalL, polyIn, polyTex, setL, type Generator } from '@lemma/core';
-import { HINT, gen, leadIn, leadTex, mapL, mc, nz, shiftIn, shiftTex, step, tailIn, tailTex } from './helpers';
+import { HINT, gen, leadIn, leadTex, mapL, mc, nz, plural, shiftIn, shiftTex, step, tailIn, tailTex } from './helpers';
 
 /** Syllabus topic 5: power functions — natural, negative and fractional exponents. */
 export const POWER_GENERATORS: Generator[] = [
@@ -565,17 +565,17 @@ export const POWER_GENERATORS: Generator[] = [
           return {
             ...common,
             prompt: L(
-              `${q1} stejně výkonných dělníků udělá zakázku za ${y1} dní. Za kolik dní by ji udělalo ${q2} dělníků?`,
+              `${q1} ${plural(q1, 'dělník udělá', 'stejně výkonní dělníci udělají', 'stejně výkonných dělníků udělá')} zakázku za ${y1} ${plural(y1, 'den', 'dny', 'dní')}. Za kolik dní by ji ${plural(q2, 'udělal', 'udělali', 'udělalo')} ${q2} ${plural(q2, 'dělník', 'dělníci', 'dělníků')}?`,
               `${q1} equally productive workers finish a job in ${y1} days. How many days would ${q2} workers need?`,
             ),
             hints,
-            solution: solution(L('dní', 'days')),
+            solution: solution(L(plural(y2, 'den', 'dny', 'dní'), y2 === 1 ? 'day' : 'days')),
           };
         case 'speed':
           return {
             ...common,
             prompt: L(
-              `Rychlostí ${q1} km/h trvá cesta ${y1} hodin. Jak dlouho by trvala rychlostí ${q2} km/h?`,
+              `Rychlostí ${q1} km/h trvá cesta ${y1} ${plural(y1, 'hodinu', 'hodiny', 'hodin')}. Jak dlouho by trvala rychlostí ${q2} km/h?`,
               `At ${q1} km/h a journey takes ${y1} hours. How long would it take at ${q2} km/h?`,
             ),
             hints,
@@ -585,7 +585,7 @@ export const POWER_GENERATORS: Generator[] = [
           return {
             ...common,
             prompt: L(
-              `Záloha se přes linku ${q1} Mbit/s přenese za ${y1} minut. Za kolik minut by se přenesla linkou ${q2} Mbit/s?`,
+              `Záloha se přes linku ${q1} Mbit/s přenese za ${y1} ${plural(y1, 'minutu', 'minuty', 'minut')}. Za kolik minut by se přenesla linkou ${q2} Mbit/s?`,
               `A backup transfers in ${y1} minutes over a ${q1} Mbit/s link. How many minutes would it take over a ${q2} Mbit/s link?`,
             ),
             hints,
@@ -595,11 +595,11 @@ export const POWER_GENERATORS: Generator[] = [
           return {
             ...common,
             prompt: L(
-              `Při průměrném zápisu ${q1} GB denně vystačí volné místo na disku na ${y1} dní. Na kolik dní vystačí při ${q2} GB denně?`,
+              `Při průměrném zápisu ${q1} GB denně vystačí volné místo na disku na ${y1} ${plural(y1, 'den', 'dny', 'dní')}. Na kolik dní vystačí při ${q2} GB denně?`,
               `At an average of ${q1} GB written per day the free disk space lasts ${y1} days. How many days does it last at ${q2} GB per day?`,
             ),
             hints,
-            solution: solution(L('dní', 'days')),
+            solution: solution(L(plural(y2, 'den', 'dny', 'dní'), y2 === 1 ? 'day' : 'days')),
           };
       }
     },
