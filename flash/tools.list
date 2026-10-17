@@ -1,0 +1,59 @@
+# =====================================================================
+#  IT Toolkit – seznam balíčků pro live ISO (Debian 13 "trixie", amd64)
+#  Jeden balíček na řádek (nebo víc oddělených mezerou). '#' = komentář.
+#  Chceš něco přidat/odebrat? Uprav tenhle soubor a pusť ./build-iso.sh
+#  Balíčky, které v repu neexistují, build skript vypíše a přeskočí.
+# =====================================================================
+
+# --- ZÁKLAD SYSTÉMU (nemazat, bez toho live systém nenaběhne pořádně) ---
+live-boot live-config live-config-systemd live-tools user-setup sudo
+locales console-setup keyboard-configuration bash-completion less file
+linux-image-amd64 intel-microcode amd64-microcode
+
+# --- Firmware (Wi-Fi, síťovky, grafiky – aby to jelo na co nejvíc HW) ---
+firmware-linux firmware-linux-nonfree firmware-misc-nonfree
+firmware-realtek firmware-iwlwifi firmware-atheros firmware-brcm80211
+firmware-amd-graphics firmware-intel-sound firmware-sof-signed
+
+# --- Desktop (XFCE – lehký, rychlý i na starých strojích) ---
+xfce4 xfce4-terminal xfce4-taskmanager xfce4-screenshooter xfce4-power-manager
+lightdm network-manager network-manager-gnome
+firefox-esr mousepad ristretto xarchiver thunar-archive-plugin gvfs-backends
+fonts-dejavu fonts-noto-color-emoji pipewire-audio pavucontrol
+
+# --- Síť: diagnostika ---
+iproute2 net-tools iputils-ping traceroute mtr-tiny bind9-dnsutils whois
+curl wget nmap arp-scan tcpdump wireshark tshark iperf3 ethtool
+netcat-openbsd socat iftop nethogs bmon ipcalc sipcalc
+iw wavemon wireless-tools rfkill
+
+# --- Síť: vzdálený přístup a sdílení ---
+openssh-client openssh-server sshfs rsync
+remmina remmina-plugin-rdp remmina-plugin-vnc tigervnc-viewer
+filezilla smbclient cifs-utils nfs-common
+minicom picocom
+
+# --- Disky, oddíly, záloha a klonování ---
+gparted parted gdisk fdisk gnome-disk-utility
+e2fsprogs dosfstools exfatprogs ntfs-3g btrfs-progs xfsprogs
+lvm2 mdadm cryptsetup
+partclone fsarchiver clonezilla
+f3
+
+# --- Záchrana dat a zdraví disků ---
+testdisk gddrescue smartmontools nvme-cli hdparm
+dislocker
+
+# --- Hardware: info a stres testy ---
+lshw hwinfo inxi dmidecode pciutils usbutils lm-sensors
+memtester stress-ng s-tui
+
+# --- Windows záchrana ---
+chntpw wimtools efibootmgr os-prober
+
+# --- Bezpečnost ---
+clamav clamav-freshclam chkrootkit rkhunter keepassxc gnupg pwgen
+
+# --- Každodenní CLI ---
+htop btop tmux vim nano mc ncdu tree lsof strace pv
+git jq 7zip zip unzip unrar-free
