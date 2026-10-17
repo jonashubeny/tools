@@ -1,0 +1,334 @@
+@import 'tailwindcss';
+
+/*
+ * Theme tokens.
+ *
+ * Components are written against roles (surface, ink, series, status), never raw colours,
+ * so the two themes differ only in this file. The data colours are not hand-picked: the
+ * categorical series, the ordinal ramps and the status colours were checked for
+ * colour-vision-deficiency separation, lightness and contrast against these exact
+ * surfaces (docs/architecture.md §9 records the method and the results).
+ *
+ * `data-theme` is always stamped on <html> (public/theme-init.js, app/theme.ts);
+ * dark is the default.
+ */
+:root {
+  color-scheme: dark;
+
+  --bg: #0d0e10;
+  --surface-1: #16181b;
+  --surface-2: #1d2024;
+  --surface-3: #272b30;
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.17);
+
+  --text: #f2f3f5;
+  --text-2: #b9bcc2;
+  --text-3: #8b8f97;
+
+  --accent: #3987e5;
+  --accent-text: #6da7ec;
+  --accent-solid: #256abf;
+  --accent-solid-hover: #1c5cab;
+  --accent-wash: rgba(57, 135, 229, 0.14);
+
+  /* Chart furniture */
+  --grid: #25282d;
+  --axis: #3a3e45;
+
+  /* Categorical series: fixed order, never cycled. */
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+  --series-muted: #4a4f57;
+
+  /* Ordinal ramps, one hue. In the dark theme "more" is lighter. */
+  --heat-0: #1f2226;
+  --heat-1: #184f95;
+  --heat-2: #2a78d6;
+  --heat-3: #6da7ec;
+  --heat-4: #b7d3f6;
+
+  --level-0: #30343a;
+  --level-1: #184f95;
+  --level-2: #256abf;
+  --level-3: #3987e5;
+  --level-4: #6da7ec;
+  --level-5: #b7d3f6;
+
+  /* Status: reserved meaning, always shown with an icon and a label. */
+  --good: #0ca30c;
+  --warning: #fab219;
+  --serious: #ec835a;
+  --critical: #d03b3b;
+  --good-text: #4cc44c;
+  --critical-text: #f08a8a;
+  --good-wash: rgba(12, 163, 12, 0.13);
+  --warning-wash: rgba(250, 178, 25, 0.12);
+  --critical-wash: rgba(208, 59, 59, 0.14);
+
+  --shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --bg: #f4f5f7;
+  --surface-1: #ffffff;
+  --surface-2: #f1f2f4;
+  --surface-3: #e3e6ea;
+  --border: rgba(13, 14, 16, 0.11);
+  --border-strong: rgba(13, 14, 16, 0.22);
+
+  --text: #0d0e10;
+  --text-2: #4a4e56;
+  --text-3: #666b74;
+
+  --accent: #2a78d6;
+  --accent-text: #1c5cab;
+  --accent-solid: #256abf;
+  --accent-solid-hover: #1c5cab;
+  --accent-wash: rgba(42, 120, 214, 0.1);
+
+  --grid: #e6e8eb;
+  --axis: #c3c7cd;
+
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #4a3aa7;
+  --series-8: #e34948;
+  --series-muted: #c3c7cd;
+
+  /* In the light theme "more" is darker. */
+  --heat-0: #e9ebee;
+  --heat-1: #86b6ef;
+  --heat-2: #5598e7;
+  --heat-3: #256abf;
+  --heat-4: #104281;
+
+  --level-0: #dfe2e6;
+  --level-1: #86b6ef;
+  --level-2: #5598e7;
+  --level-3: #2a78d6;
+  --level-4: #1c5cab;
+  --level-5: #0d366b;
+
+  --good-text: #006300;
+  --critical-text: #b02a2a;
+  --good-wash: rgba(12, 163, 12, 0.1);
+  --warning-wash: rgba(250, 178, 25, 0.16);
+  --critical-wash: rgba(208, 59, 59, 0.09);
+
+  --shadow: 0 8px 28px rgba(13, 14, 16, 0.14);
+}
+
+@theme inline {
+  --font-sans: 'Red Hat Text Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'Red Hat Mono Variable', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  --color-bg: var(--bg);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-ink: var(--text);
+  --color-ink-2: var(--text-2);
+  --color-ink-3: var(--text-3);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-text);
+  --color-accent-solid: var(--accent-solid);
+  --color-accent-solid-hover: var(--accent-solid-hover);
+  --color-accent-wash: var(--accent-wash);
+  --color-good: var(--good);
+  --color-warning: var(--warning);
+  --color-serious: var(--serious);
+  --color-critical: var(--critical);
+  --color-good-ink: var(--good-text);
+  --color-critical-ink: var(--critical-text);
+  --color-good-wash: var(--good-wash);
+  --color-warning-wash: var(--warning-wash);
+  --color-critical-wash: var(--critical-wash);
+  --color-grid: var(--grid);
+  --color-axis: var(--axis);
+}
+
+@layer base {
+  html {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 16px;
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+    scrollbar-color: var(--surface-3) transparent;
+    scrollbar-width: thin;
+  }
+
+  body {
+    min-height: 100dvh;
+    font-size: 0.9375rem;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.25;
+  }
+
+  a {
+    color: var(--accent-text);
+    text-underline-offset: 3px;
+  }
+  a:hover {
+    text-decoration: underline;
+  }
+
+  button,
+  [role='button'],
+  summary {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background: var(--accent-wash);
+  }
+
+  code,
+  kbd,
+  pre,
+  samp {
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+  }
+
+  input,
+  textarea,
+  select {
+    font: inherit;
+    color: inherit;
+  }
+
+  /* Numbers that line up in columns; big standalone figures keep proportional digits. */
+  table {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  /* KaTeX sits a little large next to Red Hat Text. */
+  .katex {
+    font-size: 1.08em;
+  }
+  .katex-display {
+    margin: 0.6em 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 2px 0;
+  }
+
+  .mono-label {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-3);
+  }
+
+  .prose-lemma p + p {
+    margin-top: 0.7em;
+  }
+  .prose-lemma strong {
+    font-weight: 600;
+    color: var(--text);
+  }
+  .prose-lemma code {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.05em 0.35em;
+  }
+  .prose-lemma pre {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.7em 0.9em;
+    overflow-x: auto;
+    margin: 0.6em 0;
+    line-height: 1.5;
+  }
+  .prose-lemma pre code {
+    background: none;
+    border: 0;
+    padding: 0;
+  }
+  .prose-lemma ul {
+    list-style: disc;
+    padding-left: 1.2em;
+    margin: 0.5em 0;
+  }
+  .prose-lemma ol {
+    list-style: decimal;
+    padding-left: 1.4em;
+    margin: 0.5em 0;
+  }
+
+  /* A range input that looks like part of an instrument panel. */
+  input[type='range'].slider {
+    appearance: none;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--surface-3);
+    outline-offset: 6px;
+  }
+  input[type='range'].slider::-webkit-slider-thumb {
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--surface-1);
+    cursor: grab;
+  }
+  input[type='range'].slider::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--surface-1);
+    cursor: grab;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

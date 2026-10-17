@@ -1,0 +1,15 @@
+# An override for hosts where rootless containers cannot have their own network — for
+# example an unprivileged LXC container without /dev/net/tun, where Podman's `pasta`
+# cannot start. The app then listens on the host's network directly.
+#
+#   podman-compose -f compose.yaml -f compose.host-network.yaml up -d
+#
+# LEMMA_BIND and LEMMA_PORT from .env still decide where it listens; the `ports:` mapping
+# of compose.yaml is meaningless in this mode and is ignored (Podman says so in a warning).
+
+services:
+  lemma:
+    network_mode: host
+    environment:
+      HOST: ${LEMMA_BIND:-127.0.0.1}
+      PORT: "${LEMMA_PORT:-8000}"

@@ -1,0 +1,20 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# runtime data (database, backups) — never commit
+/data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# local configuration and secrets
+.env
+.env.local
+
+# editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.log
+coverage/
