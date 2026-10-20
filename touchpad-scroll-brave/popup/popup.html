@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <title>Pomalejší touchpad</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <h1>Pomalejší touchpad</h1>
+
+  <label class="row">
+    <input type="checkbox" id="enabled">
+    <span>Zapnuto</span>
+  </label>
+
+  <div class="block">
+    <label for="factor">Rychlost touchpadu <output id="factorOut"></output></label>
+    <input type="range" id="factor" min="0.1" max="1" step="0.05">
+    <p class="hint">1.0 = beze změny, 0.5 = poloviční. Kolečko myši se nemění.</p>
+  </div>
+
+  <div class="block" id="siteBlock" hidden>
+    <button type="button" id="toggleSite"></button>
+  </div>
+
+  <div class="block">
+    <label for="domains">Vyjmuté domény</label>
+    <textarea id="domains" rows="4" spellcheck="false"
+      placeholder="google.com&#10;openstreetmap.org"></textarea>
+    <p class="hint">Jedna na řádek, platí i pro subdomény. Uloží se po opuštění pole.</p>
+  </div>
+
+  <label class="row">
+    <input type="checkbox" id="debug">
+    <span>Debug režim (log do konzole stránky, F12)</span>
+  </label>
+
+  <details>
+    <summary>Pokročilé ladění detekce</summary>
+    <label class="field">
+      <span>Krok high-res kolečka (0 = nemám high-res myš)</span>
+      <input type="number" id="highResQuantum" min="0" max="120" step="1">
+    </label>
+    <label class="field">
+      <span>Mezera mezi gesty (ms)</span>
+      <input type="number" id="streamGapMs" min="30" max="2000" step="10">
+    </label>
+    <label class="field">
+      <span>Paměť posledního zařízení (ms)</span>
+      <input type="number" id="memoryMs" min="0" max="60000" step="500">
+    </label>
+    <button type="button" id="resetAdvanced">Výchozí hodnoty</button>
+  </details>
+
+  <p class="status" id="status" aria-live="polite"></p>
+
+  <script src="../src/shared.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

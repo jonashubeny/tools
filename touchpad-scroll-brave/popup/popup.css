@@ -1,0 +1,124 @@
+:root {
+  --bg: #ffffff;
+  --fg: #1d1d1f;
+  --muted: #6b6b70;
+  --border: #d4d4d8;
+  --accent: #fb542b; /* Brave oranžová */
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1f23;
+    --fg: #ececf1;
+    --muted: #9a9aa3;
+    --border: #3a3b42;
+  }
+}
+
+body {
+  margin: 0;
+  padding: 14px 16px;
+  width: 300px;
+  font: 13px/1.4 system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+/* Na stránce s nastavením (otevřené v kartě) nepotřebujeme úzký popup. */
+body.options {
+  width: auto;
+  max-width: 420px;
+  margin: 24px auto;
+}
+
+h1 {
+  font-size: 15px;
+  margin: 0 0 12px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.block {
+  margin: 12px 0;
+}
+
+.block > label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+output {
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  float: right;
+}
+
+input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+textarea,
+input[type="number"] {
+  box-sizing: border-box;
+  width: 100%;
+  font: 12px ui-monospace, monospace;
+  padding: 4px 6px;
+  background: transparent;
+  color: inherit;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+button {
+  font: inherit;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.hint {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+details {
+  margin-top: 12px;
+}
+
+summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.field {
+  display: block;
+  margin: 8px 0;
+}
+
+.field span {
+  display: block;
+  margin-bottom: 2px;
+}
+
+.status {
+  min-height: 1em;
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
