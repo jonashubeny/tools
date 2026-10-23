@@ -649,7 +649,7 @@ describe('upgrading', () => {
     const path = await import('node:path');
     const { prepareDatabase } = await import('../src/accounts');
     const { loadConfig } = await import('../src/config');
-    const { openDatabase, schemaVersion } = await import('../src/db');
+    const { latestSchemaVersion, openDatabase, schemaVersion } = await import('../src/db');
     const { MIGRATIONS } = await import('../src/db/migrations');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lemma-upgrade-'));
     try {
@@ -712,8 +712,8 @@ describe('upgrading', () => {
       const ctx: Ctx = { db, config, now };
 
       // The schema moved on, and a copy of the database as it was is kept beside it.
-      expect(schemaVersion(db)).toBe(3);
-      expect(fs.readdirSync(path.join(dir, 'backups'))).toEqual([`lemma-before-schema-3-${now()}.sqlite`]);
+      expect(schemaVersion(db)).toBe(latestSchemaVersion());
+      expect(fs.readdirSync(path.join(dir, 'backups'))).toEqual([`lemma-before-schema-${latestSchemaVersion()}-${now()}.sqlite`]);
       // Nothing of the log was lost, and the new column was filled in from what each problem was.
       const rows = db.prepare('SELECT id, chance, purpose FROM problems ORDER BY id').all() as {
         id: string;

@@ -36,6 +36,8 @@ without any of them.
 | `@lemma/content` | Concepts, lessons, generators, static problems, missions, FIT snapshots, syllabus; goals, the entrance specification and the classified past papers | core |
 | `@lemma/server` | HTTP API, SQLite access, auth, jobs, tutor, integrations, teaching; simulated learners for tests and demonstrations (`src/dev`) | core, content |
 | `@lemma/web` | React single-page app | core (types, parser, figure maths) |
+| `@lemma/labs` | The Linux & Infrastructure mode: scenarios, skills, resources, its learner model ([`infra-labs.md`](infra-labs.md)) | core |
+| `@lemma/labd` | The lab worker, a separate process and container: the only part that talks to a container engine | core, labs |
 
 Rules that keep this maintainable:
 
@@ -43,7 +45,7 @@ Rules that keep this maintainable:
   takes `now` and a seeded generator as arguments. That is what makes mastery, streaks and
   scheduling testable to the day.
 - **`content` never imports `server` or `web`.**
-- **`web` never imports `content`.** Solutions, hints and answers stay on the server and
+- **`web` never imports `content` or `labs`.** Solutions, hints and answers stay on the server and
   arrive only when the API decides to send them.
 - Internal packages export TypeScript source directly; there is no build step between
   them. Vite bundles the web app, esbuild bundles the server into one file.

@@ -33,6 +33,11 @@ know it.
   chance of being admitted.
 - **Teaching** — for a tutor: what each student understands, what is in the way and what
   to do next; assignments; a mode for the lesson itself; notes the student cannot see.
+- **Linux & Infrastructure** — a second learning mode on the same account: hands-on labs on
+  real (container) machines that prepare themselves — a fault is laid on, you diagnose and
+  fix it in a terminal in the browser, the platform checks it, records how it went and
+  resets it. Skills, progressive hints, a resource library and a teacher's view, as for
+  mathematics. See [Linux & Infrastructure labs](#linux--infrastructure-labs).
 
 The interface is in Czech and English. All data stays in one SQLite file on your server.
 
@@ -137,6 +142,7 @@ Only the password is required.
 | `BACKUP_KEEP` | `14` | Number of daily backups kept; `0` switches them off. |
 | `ANTHROPIC_API_KEY` or `OPENAI_BASE_URL` | — | Switches the optional AI tutor on (see below). |
 | `GITHUB_USERNAME`, `FORGEJO_*` | — | Optional: shows your public contribution counts beside the maths activity. |
+| `LABD_URL`, `LABD_TOKEN`, `LABD_*` | — | Optional: the lab worker of the Linux & Infrastructure mode (see below). |
 
 ### Forgotten password
 
@@ -245,6 +251,66 @@ Four rules hold, and the tests check each of them:
 - Nothing a teacher does changes a mastery level. Problems solved together in a session
   are not recorded as the student's attempts; an assignment or a noted difficulty only
   changes what is selected next.
+
+## Linux & Infrastructure labs
+
+After signing in, every account chooses a mode — **Mathematics** or **Linux &
+Infrastructure** — and can switch at any time from the sidebar. Progress, history, skills
+and notes of the two are kept apart; the account, the password and the teacher are shared.
+
+The labs need a second, optional container: **labd**, the lab worker. It is the only part
+of Lemma that talks to a container engine; the web application asks it, over the compose
+network, with a shared token. Without it the mode can be browsed (roadmap, library,
+skills) but no lab starts. How it is built, what it protects and why it uses containers and
+not virtual machines is in [`docs/infra-labs.md`](docs/infra-labs.md).
+
+**What the host needs**
+
+- Docker Engine or Podman with its API socket. **Rootless Podman is recommended**: lab
+  machines then run as your unprivileged user. With rootful Docker, labd holds the Docker
+  socket, which is equivalent to root on the host — it is kept to labd alone, never
+  published, and offers only fixed operations on the reviewed scenarios.
+- No KVM, no nested virtualisation: labs are containers with systemd as PID 1.
+- Memory: about 200–400 MB per running lab (limits below), 1.5 GB of disk for the lab
+  images, which labd builds itself on first start (a few minutes, once; it needs network
+  access for that build only).
+- labd probes what the host can do and offers only the labs it can run — see the table in
+  [`docs/infra-labs.md`](docs/infra-labs.md#3-capabilities-of-a-host). An engine without
+  subordinate user IDs (an unprivileged LXC) runs 8 of the 12 labs; a full Docker host
+  runs all of them.
+
+**Switching it on**
+
+```sh
+openssl rand -hex 24                 # a token
+$EDITOR .env                         # LABD_URL=http://labd:7070 and LABD_TOKEN=<token>
+                                     # rootless Podman, as user 1000:
+                                     #   LABD_ENGINE_SOCKET_HOST=/run/user/1000/podman/podman.sock
+                                     #   LABD_UID=1000   (and: systemctl --user enable --now podman.socket)
+docker compose --profile labs up -d --build
+docker compose --profile labs logs -f labd     # "host prepared" lists what it can do
+```
+
+The administrator sees the host's capabilities, the running labs and what they use under
+**Lab host**. To prove the scenarios on your host:
+
+```sh
+docker compose --profile labs run --rm labd node labd.mjs selftest
+```
+
+Each scenario must fail its checks on a fresh lab, pass them after a reviewed reference
+fix, fail the same way after a reset, and leave nothing behind. Live labs are not touched.
+
+**Limits** (`.env`): `LABD_MAX_LABS` (4 at once), `LABD_MAX_LABS_PER_OWNER` (1),
+`LABD_MAX_MEMORY_MB` (2048 for all lab machines), `LABD_MAX_DISK_MB` (512 written per
+machine), `LABD_MAX_LIFETIME_MINUTES` (240). Each scenario also sets the memory, CPU and
+idle time of its machines; an idle lab is removed, and so is everything labd finds that it
+did not make. On the unprivileged-LXC set-up, use the host-network override for both
+containers and `LABD_URL=http://127.0.0.1:7070`, `LABD_BUILD_NETWORK=host`.
+
+**Data**: lab attempts, notes and teacher assignments live in each learner's database and
+are backed up with it. Lab machines are disposable — nothing in them is kept. labd's volume
+holds only the list of running labs.
 
 ## Putting it on the network
 

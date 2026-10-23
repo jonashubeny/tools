@@ -86,6 +86,29 @@ the course mapping must be redone from the new study plan rather than patched.
 
 ### What exists and has been verified
 
+- **Linux & Infrastructure labs** (23 October 2026, schema 4; design in
+  [`infra-labs.md`](infra-labs.md)). Verified on the development host (rootless Podman 5.8.7
+  in an unprivileged LXC: systemd yes, several user IDs no, private networks no):
+  - `labd selftest` passes for the 8 scenarios that host can run — each fails its checks on
+    a fresh lab, passes after the reference fix, fails the same way after a reset, and
+    leaves nothing behind. Writing it found three real bugs (a check and a fix that matched
+    their own command line with `pgrep -f`, and `userdel` refusing an alias of UID 0).
+  - The whole lifecycle through the built images, both containers read-only with every
+    capability dropped: start, terminal through the authenticated WebSocket, failed check,
+    fix in the terminal, solved, reset back to the fault, exit, no lab container left.
+    The same through a headless browser (Chromium), desktop and phone widths.
+  - Authorization: another account's attempt, lab, terminal, notes and teacher view answer
+    404/403 — through the API, through labd directly, and in automated tests; a missing or
+    foreign Origin, a missing cookie or a wrong token refuse the terminal.
+  - labd stopped or not configured: the mode says so, nothing is proposed, the rest of
+    Lemma is unaffected.
+- **Not verified for the labs**: the four scenarios that need several user IDs or private
+  networks (`nginx-bad-gateway`, `cron-backup-broken`, `ssh-hardening`,
+  `service-reachability`) and the `full` image have never run — they are marked
+  *experimental* in the interface; run `selftest` on a full Docker host before relying on
+  them. Docker Engine itself has not run labd; only Podman's compatible API has. Expiry after
+  idle time is covered by tests with a moved clock, not observed over hours.
+
 - **The whole loop works end to end**: sign in, see a plan for today with a reason for
   every block, learn a concept, practise it with typed answers, get hints, see the worked
   solution, have the error classified, watch the mastery level respond, review later,

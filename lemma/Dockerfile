@@ -2,7 +2,8 @@
 #
 # Lemma — one image, one process, one volume.
 #
-#   build stage    installs everything and builds the web app and the server bundle
+#   build stage    installs everything and builds the web app, the server and labd bundles
+#   labd stage     the optional lab worker (compose profile "labs")
 #   runtime stage  carries only Node, the bundle, the static files and SQLite's native module
 #
 # The server bundle contains all JavaScript dependencies. The one thing that cannot be
@@ -19,6 +20,8 @@ WORKDIR /src
 COPY package.json package-lock.json .npmrc ./
 COPY packages/core/package.json packages/core/
 COPY packages/content/package.json packages/content/
+COPY packages/labs/package.json packages/labs/
+COPY packages/labd/package.json packages/labd/
 COPY packages/server/package.json packages/server/
 COPY packages/web/package.json packages/web/
 
@@ -39,7 +42,29 @@ COPY scripts scripts
 COPY packages packages
 RUN npm run build
 
+# ------------------------------------------------------------------------------ labd
+# The lab worker of the Linux & Infrastructure mode: its own image and its own container,
+# because it is the one part that talks to the container engine. It has no native
+# dependency; the lab images are built by labd itself from images/ on first start.
+FROM ${NODE_IMAGE} AS labd
+ENV NODE_ENV=production \
+    LABD_HOST=0.0.0.0 \
+    LABD_PORT=7070 \
+    LABD_STATE_DIR=/var/lib/labd \
+    LABD_IMAGES_DIR=/app/images \
+    LABD_ENGINE_SOCKET=/var/run/engine.sock
+WORKDIR /app
+COPY --from=build /src/packages/labd/dist/labd.mjs /src/packages/labd/dist/labd.mjs.map ./
+COPY packages/labd/images ./images
+RUN mkdir -p /var/lib/labd && chmod 0777 /var/lib/labd
+VOLUME ["/var/lib/labd"]
+EXPOSE 7070
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:' + (process.env.LABD_PORT || 7070) + '/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+CMD ["node", "--enable-source-maps", "labd.mjs"]
+
 # --------------------------------------------------------------------------- runtime
+# Last, so that a plain `docker build .` still gives the application.
 FROM ${NODE_IMAGE} AS runtime
 
 ENV NODE_ENV=production \

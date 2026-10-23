@@ -13,3 +13,9 @@ services:
     environment:
       HOST: ${LEMMA_BIND:-127.0.0.1}
       PORT: "${LEMMA_PORT:-8000}"
+
+  # labd, too, on the host's network; then set LABD_URL=http://127.0.0.1:7070 in .env.
+  labd:
+    network_mode: host
+    environment:
+      LABD_HOST: 127.0.0.1

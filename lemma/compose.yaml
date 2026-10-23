@@ -63,5 +63,48 @@ services:
 
     stop_grace_period: 15s
 
+  # The lab worker of the Linux & Infrastructure mode. Optional: it starts only with the
+  # profile "labs" (docker compose --profile labs up -d), and lemma works without it.
+  #
+  # It is the one container given the container engine's socket — which is as much as
+  # root on the host for a rootful engine. It is never published: lemma reaches it on the
+  # compose network with the shared LABD_TOKEN, and it offers only a fixed set of lab
+  # operations on reviewed scenarios. Lab machines get no network at all, or an internal
+  # one of their own with no route out. A rootless engine is the safer choice (README).
+  labd:
+    profiles: ["labs"]
+    build:
+      context: .
+      target: labd
+    image: lemma-labd:${LEMMA_TAG:-local}
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      LABD_HOST: 0.0.0.0
+      LABD_PORT: "7070"
+      LABD_STATE_DIR: /var/lib/labd
+      LABD_ENGINE_SOCKET: /var/run/engine.sock
+    volumes:
+      - ${LABD_ENGINE_SOCKET_HOST:-/var/run/docker.sock}:/var/run/engine.sock
+      - labd-state:/var/lib/labd
+    user: "${LABD_UID:-0}:${LABD_GID:-0}"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7070/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    stop_grace_period: 10s
+
 volumes:
   lemma-data:
+  labd-state:
