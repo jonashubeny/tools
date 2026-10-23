@@ -39,6 +39,9 @@ know it.
   resets it. Skills, progressive hints, a resource library and a teacher's view, as for
   mathematics. See [Linux & Infrastructure labs](#linux--infrastructure-labs).
 
+> **Začínáš?** Instalace krok za krokem v češtině, od čistého Linuxu po běžící Lemmu
+> i s laboratořemi: [NAVOD.md](NAVOD.md).
+
 The interface is in Czech and English. All data stays in one SQLite file on your server.
 
 > **State of the project.** Working software with tests, not a finished product. What is
