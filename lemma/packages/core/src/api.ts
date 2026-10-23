@@ -1,3 +1,4 @@
+import type { LearningMode } from './infra-api';
 import type { PublicAnswerSpec } from './answer/types';
 import type {
   AdmissionRoute,
@@ -77,6 +78,8 @@ export interface SettingsDto {
   githubUser: string;
   forgejoUrl: string;
   forgejoUser: string;
+  /** Mathematics or Linux & Infrastructure; null until the learner has chosen. */
+  mode: LearningMode | null;
 }
 
 // ----------------------------------------------------------------------------- accounts

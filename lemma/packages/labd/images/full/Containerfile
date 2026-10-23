@@ -1,0 +1,22 @@
+# Lemma lab image "full": base plus the services that run under their own users — nginx,
+# cron, OpenSSH, sudo. Needs a container engine that maps a full range of user IDs; labd
+# builds it only on such a host.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+RUN set -eu; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends nginx cron openssh-server sudo rsyslog; \
+    apt-get clean; rm -rf /var/lib/apt/lists/*; \
+    systemctl disable nginx ssh cron rsyslog >/dev/null 2>&1 || true; \
+    rm -f /etc/ssh/ssh_host_*
+
+# Host keys are made per lab machine, at its first start, never baked into the image.
+RUN printf '%s\n' '[Unit]' 'Description=Generate SSH host keys' 'Before=ssh.service' \
+      'ConditionPathExists=!/etc/ssh/ssh_host_ed25519_key' '[Service]' 'Type=oneshot' \
+      'ExecStart=/usr/bin/ssh-keygen -A' '[Install]' 'WantedBy=multi-user.target' \
+      > /etc/systemd/system/ssh-hostkeys.service; \
+    systemctl enable ssh-hostkeys.service
+
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

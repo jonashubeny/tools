@@ -1,6 +1,14 @@
 import { randomBytes, randomInt } from 'node:crypto';
 import { DEFAULT_GOAL, conceptsOfGoal } from '@lemma/content';
-import { DEFAULT_GRADE_SCALE, isGoalId, isLocale, studyDay, type GoalId, type SettingsDto } from '@lemma/core';
+import {
+  DEFAULT_GRADE_SCALE,
+  isGoalId,
+  isLearningMode,
+  isLocale,
+  studyDay,
+  type GoalId,
+  type SettingsDto,
+} from '@lemma/core';
 import type { Config } from '../config';
 import { type Db, fromJson, toJson } from '../db';
 
@@ -40,6 +48,7 @@ export const DEFAULT_SETTINGS: SettingsDto = {
   githubUser: '',
   forgejoUrl: '',
   forgejoUser: '',
+  mode: null,
 };
 
 function readSetting<T>(db: Db, key: string, fallback: T): T {
@@ -97,6 +106,7 @@ export function updateSettings(ctx: Ctx, patch: Record<string, unknown>): Settin
     next.currentTopic = clampInt(patch.currentTopic, 1, 99, current.currentTopic ?? 1);
 
   if (isGoalId(patch.goal)) next.goal = patch.goal;
+  if (isLearningMode(patch.mode)) next.mode = patch.mode;
   if (patch.examDay === null || patch.examDay === '') next.examDay = null;
   else if (typeof patch.examDay === 'string' && DAY.test(patch.examDay)) next.examDay = patch.examDay;
   if (Array.isArray(patch.inSchool))

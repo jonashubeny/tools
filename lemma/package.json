@@ -2,7 +2,7 @@
   "name": "lemma",
   "version": "0.1.0",
   "private": true,
-  "description": "Lemma — a self-hosted mathematical engineering laboratory",
+  "description": "Lemma \u2014 a self-hosted mathematical engineering laboratory",
   "type": "module",
   "workspaces": [
     "packages/*"
@@ -12,14 +12,15 @@
   },
   "scripts": {
     "dev": "concurrently -n api,web -c blue,green \"npm run dev -w @lemma/server\" \"npm run dev -w @lemma/web\"",
-    "build": "npm run build -w @lemma/web && npm run build -w @lemma/server",
+    "build": "npm run build -w @lemma/web && npm run build -w @lemma/server && npm run build -w @lemma/labd",
     "start": "node packages/server/dist/server.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit -p packages/core && tsc --noEmit -p packages/content && tsc --noEmit -p packages/server && tsc --noEmit -p packages/web",
+    "typecheck": "tsc --noEmit -p packages/core && tsc --noEmit -p packages/content && tsc --noEmit -p packages/labs && tsc --noEmit -p packages/labs/test && tsc --noEmit -p packages/labd && tsc --noEmit -p packages/server && tsc --noEmit -p packages/web",
     "content:lint": "vitest run packages/content",
     "jpz:coverage": "tsx scripts/jpz-coverage.ts",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "labs:selftest": "tsx packages/labd/src/main.ts selftest"
   },
   "devDependencies": {
     "@types/node": "^22.18.0",

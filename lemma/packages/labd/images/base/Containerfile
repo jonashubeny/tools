@@ -1,0 +1,51 @@
+# Lemma lab image "base": Debian 12 with systemd as PID 1 and the usual diagnostic tools.
+#
+# Built by the lab worker (labd) on first use and tagged with a hash of this directory, so a
+# change here is picked up by itself. Every lab machine starts from this image and is then
+# brought into its scenario's initial state by the scenario's provisioning scripts.
+#
+# LAB_SINGLE_UID=1 is set by labd on hosts whose container engine maps a single user ID
+# (rootless Podman without subordinate ID ranges). There dpkg cannot chown files to system
+# users, so a shim swallows those failures during the build only. Images built that way run
+# root-only scenarios; anything that needs real users is refused by labd on such a host.
+ARG DEBIAN_IMAGE=docker.io/library/debian:bookworm-slim
+FROM ${DEBIAN_IMAGE}
+ARG LAB_SINGLE_UID=0
+
+ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8
+
+RUN set -eu; \
+    if [ "$LAB_SINGLE_UID" = 1 ]; then \
+      echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/00lemma-sandbox; \
+      for b in /bin/chown /bin/chgrp /usr/bin/dpkg-statoverride; do mv $b $b.real; \
+        printf '#!/bin/sh\n%s.real "$@" 2>/dev/null || true\n' $b > $b; chmod 0755 $b; done; \
+    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      systemd systemd-sysv \
+      procps psmisc lsof strace iproute2 iputils-ping netcat-openbsd curl ca-certificates bind9-dnsutils \
+      less vim-tiny nano file jq tree bash-completion python3 tar gzip; \
+    if [ "$LAB_SINGLE_UID" = 1 ]; then \
+      for b in /bin/chown /bin/chgrp /usr/bin/dpkg-statoverride; do mv $b.real $b; done; \
+    fi; \
+    apt-get clean; rm -rf /var/lib/apt/lists/*
+
+# A container has no consoles, no hardware and no clock to set: units for those only fail.
+RUN systemctl mask getty.target console-getty.service systemd-udevd.service systemd-udev-trigger.service \
+      systemd-modules-load.service sys-kernel-debug.mount sys-kernel-tracing.mount \
+      systemd-remount-fs.service systemd-firstboot.service systemd-timesyncd.service 2>/dev/null || true; \
+    systemctl set-default multi-user.target
+
+# Shell history is written after every command, so that labd can see which diagnostic
+# commands were used (it reads /root/.bash_history when a solution is checked).
+RUN printf '%s\n' \
+      '# lemma: keep the history current' \
+      'shopt -s histappend' \
+      'HISTSIZE=5000; HISTFILESIZE=5000; HISTTIMEFORMAT="%F %T "' \
+      'PROMPT_COMMAND="history -a${PROMPT_COMMAND:+; $PROMPT_COMMAND}"' \
+      >> /etc/bash.bashrc; \
+    printf '%s\n' '' 'Lemma lab machine. Nothing here can reach the internet or your network.' \
+      'Work as you would on a real server; "Check" in the browser verifies your solution.' '' > /etc/motd
+
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

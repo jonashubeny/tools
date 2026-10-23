@@ -42,3 +42,4 @@ export * from './learning/diagnostic';
 export * from './learning/readiness';
 
 export * from './api';
+export * from './infra-api';
