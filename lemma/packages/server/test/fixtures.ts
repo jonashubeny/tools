@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { UserDto } from '@lemma/core';
 import { expect } from 'vitest';
 import { ensurePassword } from '../src/app';
+import type { LabService } from '../src/services/infra/labd';
 import { type Harness, harness } from './helpers';
 
 /**
@@ -25,10 +26,10 @@ export function cleanUp(): void {
 export const ADMIN_PASSWORD = 'correct horse battery';
 
 /** An instance with sign-in on and user databases on disk, in a directory of its own. */
-export function instance(env: Record<string, string> = {}): Harness & { dir: string } {
+export function instance(env: Record<string, string> = {}, labs?: LabService): Harness & { dir: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lemma-teach-'));
   temporary.push(dir);
-  const h = harness({ auth: true, env: { DATA_DIR: dir, ...env } });
+  const h = harness({ auth: true, env: { DATA_DIR: dir, ...env }, labs });
   ensurePassword(h.db, h.config, h.now());
   return { ...h, dir };
 }

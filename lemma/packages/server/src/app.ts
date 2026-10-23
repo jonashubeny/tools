@@ -75,6 +75,32 @@ import {
   studentSummary,
   updateNote,
 } from './services/teach';
+import { FileStore } from './services/infra/files';
+import { type LabService, LabdClient } from './services/infra/labd';
+import {
+  type InfraDeps,
+  assignScenario,
+  cancelInfraAssignment,
+  finishAttempt,
+  getAttempt,
+  heartbeat,
+  infraOverview,
+  infraRoadmap,
+  infraScenario,
+  infraStudent,
+  infraStudentAttempt,
+  listAttempts,
+  listInfraAssignments,
+  listResources,
+  resetAttempt,
+  revealSolution as revealLabSolution,
+  saveNote,
+  saveReport,
+  startAttempt,
+  studyGuide,
+  takeHint as takeLabHint,
+  verifyAttempt,
+} from './services/infra/service';
 import { registerTutorRoutes, tutorStatus } from './services/tutor';
 import type { Provider } from './services/tutor/types';
 
@@ -89,6 +115,8 @@ export interface AppDeps {
   accounts?: Accounts;
   /** Replaces the configured AI provider; used by tests. */
   tutorProvider?: Provider;
+  /** The lab worker; created from LABD_URL and LABD_TOKEN when not given (tests give a fake). */
+  labs?: LabService;
 }
 
 const StartRun = z.object({
@@ -145,6 +173,10 @@ export function createApp(deps: AppDeps): Hono<Env> {
   const accounts = deps.accounts ?? new Accounts(main, config, clock);
   const throttle = new LoginThrottle();
   const app = new Hono<Env>();
+  const infra: InfraDeps = {
+    labs: deps.labs ?? new LabdClient(config.labd, clock),
+    files: new FileStore(main, config.dataDir, clock),
+  };
 
   const clientAddress = (c: Context<Env>): string => {
     if (config.trustProxy) {
@@ -517,6 +549,61 @@ export function createApp(deps: AppDeps): Hono<Env> {
     return c.json(forgeOverview(ctx));
   });
 
+  // ---- linux & infrastructure --------------------------------------------------------
+  //
+  // Every attempt is looked up in the asking learner's own database, and labd is asked on
+  // behalf of the asking account: neither another learner's attempt nor their lab can be
+  // named from here.
+
+  const owner = (c: Context<Env>): string => c.get('learner').username;
+
+  app.get('/api/infra/overview', async (c) => c.json(await infraOverview(ctxOf(c), infra, owner(c))));
+  app.get('/api/infra/roadmap', async (c) => c.json(await infraRoadmap(ctxOf(c), infra)));
+  app.get('/api/infra/scenarios/:id', async (c) => c.json(await infraScenario(ctxOf(c), infra, c.req.param('id'))));
+  app.post('/api/infra/scenarios/:id/start', async (c) =>
+    c.json(await startAttempt(ctxOf(c), infra, owner(c), c.req.param('id'))),
+  );
+  app.get('/api/infra/attempts', (c) => c.json(listAttempts(ctxOf(c), c.req.query('scenario') || undefined)));
+  app.get('/api/infra/attempts/:id', async (c) => c.json(await getAttempt(ctxOf(c), infra, owner(c), c.req.param('id'))));
+  app.post('/api/infra/attempts/:id/verify', async (c) =>
+    c.json(await verifyAttempt(ctxOf(c), infra, owner(c), c.req.param('id'))),
+  );
+  app.post('/api/infra/attempts/:id/hint', async (c) => c.json(await takeLabHint(ctxOf(c), infra, owner(c), c.req.param('id'))));
+  app.post('/api/infra/attempts/:id/solution', async (c) =>
+    c.json(await revealLabSolution(ctxOf(c), infra, owner(c), c.req.param('id'))),
+  );
+  app.post('/api/infra/attempts/:id/reset', async (c) =>
+    c.json(await resetAttempt(ctxOf(c), infra, owner(c), c.req.param('id'))),
+  );
+  app.post('/api/infra/attempts/:id/finish', async (c) =>
+    c.json(await finishAttempt(ctxOf(c), infra, owner(c), c.req.param('id'))),
+  );
+  app.post('/api/infra/attempts/:id/heartbeat', async (c) => {
+    const { seconds } = await body(c);
+    return c.json(await heartbeat(ctxOf(c), infra, owner(c), c.req.param('id'), seconds));
+  });
+  app.put('/api/infra/attempts/:id/report', async (c) => {
+    const { report } = await body(c);
+    return c.json(await saveReport(ctxOf(c), infra, owner(c), c.req.param('id'), report));
+  });
+  app.put('/api/infra/notes/:scenario', async (c) => {
+    const { body: text } = await body(c);
+    return c.json(saveNote(ctxOf(c), c.req.param('scenario'), text));
+  });
+  app.get('/api/infra/assignments', (c) => c.json(listInfraAssignments(ctxOf(c))));
+  app.get('/api/infra/resources', (c) => c.json(listResources(infra)));
+  app.get('/api/infra/guide', (c) =>
+    c.json(studyGuide(ctxOf(c), { skill: c.req.query('skill') || undefined, scenario: c.req.query('scenario') || undefined })),
+  );
+  app.get('/api/infra/files/:id', (c) => {
+    const file = infra.files.read(c.req.param('id'));
+    return c.body(new Uint8Array(file.data), 200, {
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `inline; filename="${file.filename}"`,
+      'Content-Security-Policy': "default-src 'none'; sandbox",
+    });
+  });
+
   registerTutorRoutes(app as unknown as Hono, {
     ctxOf: ctxOf as never,
     allowed: ((c: Context<Env>) => c.get('learner').tutor) as never,
@@ -550,6 +637,10 @@ export function createApp(deps: AppDeps): Hono<Env> {
       // One's own notes and session records as a teacher; a learner's export never has another's.
       'student_notes',
       'teach_sessions',
+      'infra_attempts',
+      'infra_verifications',
+      'infra_notes',
+      'infra_assignments',
     ];
     const dump: Record<string, unknown[]> = {};
     for (const table of tables) dump[table] = ctx.db.prepare(`SELECT * FROM ${table}`).all();
@@ -707,6 +798,18 @@ export function createApp(deps: AppDeps): Hono<Env> {
     c.json(finishSession(c.get('learner').username, ctxOf(c), c.get('student'), c.req.param('id'), await body(c))),
   );
 
+  // Lab work of a learner, for their teacher (behind the same gate as everything above).
+  app.get('/api/teach/students/:student/infra', async (c) => c.json(await infraStudent(c.get('student'), infra)));
+  app.get('/api/teach/students/:student/infra/attempts/:id', async (c) =>
+    c.json(await infraStudentAttempt(c.get('student').ctx, infra, c.req.param('id'))),
+  );
+  app.post('/api/teach/students/:student/infra/assignments', async (c) =>
+    c.json(assignScenario(c.get('student').ctx, c.get('learner').username, await body(c))),
+  );
+  app.delete('/api/teach/students/:student/infra/assignments/:id', (c) =>
+    c.json(cancelInfraAssignment(c.get('student').ctx, c.req.param('id'))),
+  );
+
   // ---- administration ----------------------------------------------------------------
 
   /** A backup of every learner's database, each written beside the database it copies. */
@@ -716,6 +819,56 @@ export function createApp(deps: AppDeps): Hono<Env> {
     for (const learner of await accounts.everyone())
       files.push(await backupDatabase(learner.ctx.db, learner.ctx.config.dataDir, label, 0));
     return c.json({ file: path.basename(files[0]!), databases: files.length });
+  });
+
+  // The lab host: what it can do, what runs on it, and what it costs.
+  app.get('/api/admin/labs', async (c) => {
+    const status = await infra.labs.status();
+    let labs: Awaited<ReturnType<LabService['adminLabs']>> = { labs: [], usage: [] };
+    if (status.host.reachable) labs = await infra.labs.adminLabs().catch(() => labs);
+    return c.json({
+      host: status.host,
+      limits: status.limits,
+      labs: labs.labs.map((lab) => ({
+        id: lab.id,
+        owner: lab.owner,
+        scenarioId: lab.scenarioId,
+        status: lab.status,
+        error: lab.error,
+        detail: lab.detail,
+        createdAt: lab.createdAt,
+        expiresAt: lab.expiresAt,
+        endedAt: lab.endedAt,
+        machines: labs.usage.find((u) => u.lab.id === lab.id)?.machines ?? lab.machines.map((name) => ({ name, memory: null, cpuPercent: null, diskBytes: null })),
+      })),
+    });
+  });
+  app.delete('/api/admin/labs/:id', async (c) => {
+    await infra.labs.adminDestroy(c.req.param('id'));
+    return c.json({ ok: true });
+  });
+  app.post('/api/admin/labs/prepare', async (c) => {
+    await infra.labs.prepare();
+    return c.json({ ok: true });
+  });
+  app.post('/api/admin/infra/files', async (c) => {
+    const form = await c.req.parseBody();
+    const file = form.file;
+    if (!(file instanceof File)) throw badRequest('a PDF file is required');
+    if (file.size > 20 * 1024 * 1024) throw badRequest('the file is larger than 20 MB');
+    return c.json(
+      infra.files.add(c.get('learner').username, {
+        title: form.title,
+        filename: file.name,
+        skills: form.skills,
+        scenarios: form.scenarios,
+        data: Buffer.from(await file.arrayBuffer()),
+      }),
+    );
+  });
+  app.delete('/api/admin/infra/files/:id', (c) => {
+    infra.files.remove(c.req.param('id'));
+    return c.json({ ok: true });
   });
 
   app.get('/api/admin/users', (c) => c.json(accounts.list()));

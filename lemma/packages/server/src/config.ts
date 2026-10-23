@@ -29,6 +29,8 @@ export interface Config {
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   github: { username: string; token: string };
   forgejo: { url: string; username: string; token: string };
+  /** The lab worker of the Linux & Infrastructure mode; labs are off when url or token is empty. */
+  labd: { url: string; token: string };
   ai: {
     provider: 'none' | 'anthropic' | 'openai';
     model: string;
@@ -124,6 +126,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       username: env.FORGEJO_USERNAME ?? '',
       token: env.FORGEJO_TOKEN ?? '',
     },
+    labd: { url: (env.LABD_URL ?? '').replace(/\/+$/, ''), token: env.LABD_TOKEN ?? '' },
     ai: {
       provider,
       model: env.AI_MODEL ?? '',

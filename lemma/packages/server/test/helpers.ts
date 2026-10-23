@@ -7,6 +7,7 @@ import { type Db, migrate, openDatabase } from '../src/db';
 import { wrongAnswerFor } from '../src/dev/personas';
 import { setLogLevel } from '../src/log';
 import type { Ctx } from '../src/services/context';
+import type { LabService } from '../src/services/infra/labd';
 import type { Provider } from '../src/services/tutor/types';
 
 /** An application on an in-memory database with a clock the test controls. */
@@ -41,7 +42,9 @@ export const DAY = 24 * HOUR;
 /** Wednesday 7 October 2026, 16:00 in Prague. */
 export const START = Date.UTC(2026, 9, 7, 14, 0, 0);
 
-export function harness(options: { auth?: boolean; provider?: Provider; env?: Record<string, string> } = {}): Harness {
+export function harness(
+  options: { auth?: boolean; provider?: Provider; env?: Record<string, string>; labs?: LabService } = {},
+): Harness {
   setLogLevel('error');
   const config = loadConfig({
     DATA_DIR: '/nonexistent/lemma-test',
@@ -55,7 +58,7 @@ export function harness(options: { auth?: boolean; provider?: Provider; env?: Re
   let clock = START;
   const now = (): number => clock;
   const accounts = new Accounts(db, config, now);
-  const app = createApp({ db, config, now, accounts, tutorProvider: options.provider }) as unknown as Hono;
+  const app = createApp({ db, config, now, accounts, tutorProvider: options.provider, labs: options.labs }) as unknown as Hono;
 
   const read = async <T>(response: Response): Promise<{ status: number; body: T; headers: Headers }> => {
     const text = await response.text();

@@ -314,4 +314,79 @@ CREATE TABLE teach_sessions (
 CREATE INDEX teach_sessions_student ON teach_sessions (student, started_at);
 `,
   },
+  {
+    id: 4,
+    name: 'linux and infrastructure labs',
+    // As before, every database gets every table:
+    //   each learner's     infra_attempts (the log the infra learner model is derived from),
+    //                      infra_verifications, infra_notes, infra_assignments
+    //   the main database  infra_files (study guides the administrator uploaded)
+    sql: `
+-- One attempt at a scenario: from starting its lab to solving or leaving it.
+CREATE TABLE infra_attempts (
+  id              TEXT    PRIMARY KEY,
+  scenario        TEXT    NOT NULL,
+  version         INTEGER NOT NULL,
+  lab_id          TEXT,
+  day             TEXT    NOT NULL,
+  started_at      INTEGER NOT NULL,
+  finished_at     INTEGER,
+  status          TEXT    NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'solved', 'abandoned', 'expired')),
+  hint_level      INTEGER NOT NULL DEFAULT 0,
+  hints_taken     INTEGER NOT NULL DEFAULT 0,
+  solution_viewed INTEGER NOT NULL DEFAULT 0,
+  verifications   INTEGER NOT NULL DEFAULT 0,
+  -- checks that failed before the solve, as [{check, mistake}]
+  failed          TEXT    NOT NULL DEFAULT '[]',
+  -- the last verification, as [{id, passed}]
+  last_results    TEXT,
+  diagnostics     TEXT    NOT NULL DEFAULT '[]',
+  seconds         INTEGER NOT NULL DEFAULT 0,
+  report          TEXT    NOT NULL DEFAULT '',
+  report_passed   INTEGER,
+  assignment_id   TEXT
+);
+CREATE INDEX infra_attempts_scenario ON infra_attempts (scenario, started_at);
+CREATE INDEX infra_attempts_status ON infra_attempts (status);
+
+CREATE TABLE infra_verifications (
+  id         TEXT    PRIMARY KEY,
+  attempt_id TEXT    NOT NULL REFERENCES infra_attempts (id) ON DELETE CASCADE,
+  at         INTEGER NOT NULL,
+  results    TEXT    NOT NULL,
+  passed     INTEGER NOT NULL
+);
+CREATE INDEX infra_verifications_attempt ON infra_verifications (attempt_id, at);
+
+CREATE TABLE infra_notes (
+  scenario   TEXT    PRIMARY KEY,
+  body       TEXT    NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE infra_assignments (
+  id         TEXT    PRIMARY KEY,
+  scenario   TEXT    NOT NULL,
+  note       TEXT    NOT NULL DEFAULT '',
+  due_day    TEXT,
+  created_by TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  status     TEXT    NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'done', 'cancelled')),
+  done_at    INTEGER,
+  attempt_id TEXT
+);
+
+CREATE TABLE infra_files (
+  id          TEXT    PRIMARY KEY,
+  title       TEXT    NOT NULL,
+  filename    TEXT    NOT NULL,
+  size        INTEGER NOT NULL,
+  sha256      TEXT    NOT NULL,
+  skills      TEXT    NOT NULL DEFAULT '[]',
+  scenarios   TEXT    NOT NULL DEFAULT '[]',
+  uploaded_by TEXT    NOT NULL,
+  uploaded_at INTEGER NOT NULL
+);
+`,
+  },
 ];

@@ -9,6 +9,8 @@ import { loadConfig, publishedNote } from './config';
 import { backupDay, schemaVersion } from './db';
 import { errorFields, log, setLogLevel } from './log';
 import { refreshForge } from './services/forge';
+import { LabdClient } from './services/infra/labd';
+import { attachTerminalProxy } from './services/infra/terminal';
 import { tutorStatus } from './services/tutor';
 
 const HOUR = 3_600_000;
@@ -27,7 +29,8 @@ async function main(): Promise<void> {
   // in the log at start and not at somebody's first click.
   const learners = await accounts.everyone();
 
-  const app = createApp({ db, config, accounts });
+  const labs = new LabdClient(config.labd, now);
+  const app = createApp({ db, config, accounts, labs });
   const server = serve({ fetch: app.fetch, hostname: config.host, port: config.port }, (info) => {
     const tutor = tutorStatus(config);
     log.info('lemma is listening', {
@@ -38,11 +41,14 @@ async function main(): Promise<void> {
       timeZone: config.timeZone,
       web: config.webDir ? 'served' : 'not served (API only)',
       tutor: tutor.enabled ? `${tutor.provider} (${tutor.model})` : 'off',
+      labs: labs.configured() ? config.labd.url : 'off',
       users: learners.length - 1,
     });
     const published = publishedNote(config);
     if (published) log.info(published.msg, { url: published.url });
   });
+
+  attachTerminalProxy(server as Server, { accounts, config, labs });
 
   // ---- housekeeping -------------------------------------------------------------------
 
