@@ -246,3 +246,32 @@ describe('boundaries between accounts', () => {
     expect((await h.get('/api/admin/labs', { Cookie: admin })).status).toBe(200);
   });
 });
+
+describe('PDF study guides', () => {
+  it('takes PDFs from the administrator only, refuses anything else, and serves them sandboxed', async () => {
+    const h = instance({}, new FakeLabs());
+    const admin = await asAdmin(h);
+    const ema = await createUser(h, admin, 'ema');
+    const upload = (cookie: string, bytes: string, name = 'guide.pdf') => {
+      const form = new FormData();
+      form.set('title', 'systemd v kostce');
+      form.set('skills', 'linux.systemd,not.a.skill');
+      form.set('file', new File([bytes], name, { type: 'application/pdf' }));
+      return h.app.request('/api/admin/infra/files', { method: 'POST', body: form, headers: { Cookie: cookie } });
+    };
+    expect((await upload(ema, '%PDF-1.7 x')).status).toBe(403);
+    expect((await upload(admin, '<html>not a pdf</html>', 'evil.pdf')).status).toBe(400);
+    const ok = await upload(admin, '%PDF-1.7\n%lab test\n');
+    expect(ok.status).toBe(200);
+    const file = (await ok.json()) as { id: string; url: string; skills: string[] };
+    expect(file.skills).toEqual(['linux.systemd']);
+
+    const listed = await h.get<{ id: string }[]>('/api/infra/resources', { Cookie: ema });
+    expect(listed.body.map((r) => r.id)).toContain(file.id);
+    const served = await h.get(file.url, { Cookie: ema });
+    expect(served.status).toBe(200);
+    expect(served.headers.get('content-type')).toBe('application/pdf');
+    expect(served.headers.get('content-security-policy')).toContain('sandbox');
+    expect((await h.get(file.url)).status).toBe(401);
+  });
+});

@@ -12,6 +12,7 @@ import {
   isErrorType,
 } from '@lemma/core';
 import { type Context, Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { z } from 'zod';
 import { type Learner, Accounts } from './accounts';
@@ -212,7 +213,11 @@ export function createApp(deps: AppDeps): Hono<Env> {
   app.use('*', async (c, next) => {
     const started = Date.now();
     await next();
-    for (const [name, value] of Object.entries(SECURITY_HEADERS)) c.res.headers.set(name, value);
+    for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+      // A route that set a stricter policy of its own (a served PDF: sandbox) keeps it.
+      if (name === 'Content-Security-Policy' && c.res.headers.has(name)) continue;
+      c.res.headers.set(name, value);
+    }
     if (c.req.path.startsWith('/api/')) {
       c.res.headers.set('Cache-Control', 'no-store');
       log.debug('request', { method: c.req.method, path: c.req.path, status: c.res.status, ms: Date.now() - started });
@@ -851,6 +856,16 @@ export function createApp(deps: AppDeps): Hono<Env> {
     await infra.labs.prepare();
     return c.json({ ok: true });
   });
+  // Refused while it streams in, not after a gigabyte has been read into memory.
+  app.use(
+    '/api/admin/infra/files',
+    bodyLimit({
+      maxSize: 21 * 1024 * 1024,
+      onError: () => {
+        throw new HttpError(422, 'too_large', 'the file is larger than 20 MB');
+      },
+    }),
+  );
   app.post('/api/admin/infra/files', async (c) => {
     const form = await c.req.parseBody();
     const file = form.file;
