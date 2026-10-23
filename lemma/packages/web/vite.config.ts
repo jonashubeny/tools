@@ -9,7 +9,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': { target: `http://127.0.0.1:${process.env.PORT ?? 8000}`, changeOrigin: false },
+      '/api': { target: `http://127.0.0.1:${process.env.PORT ?? 8000}`, changeOrigin: false, ws: true },
       '/healthz': { target: `http://127.0.0.1:${process.env.PORT ?? 8000}`, changeOrigin: false },
     },
   },

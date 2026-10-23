@@ -137,6 +137,7 @@ const summary = (r: AttemptRow): AttemptSummaryDto => {
   return {
     id: r.id,
     scenarioId: r.scenario,
+    title: SCENARIO_BY_ID.get(r.scenario)?.title ?? L(r.scenario, r.scenario),
     version: r.version,
     status: r.status,
     startedAt: r.started_at,
@@ -272,6 +273,7 @@ const assignmentDto = (r: {
 }): InfraAssignmentDto => ({
   id: r.id,
   scenarioId: r.scenario,
+  title: SCENARIO_BY_ID.get(r.scenario)?.title ?? L(r.scenario, r.scenario),
   note: r.note,
   dueDay: r.due_day,
   createdBy: r.created_by,
@@ -657,7 +659,6 @@ export async function infraStudent(student: { username: string; ctx: Ctx }, deps
       .reverse()
       .map((r) => ({
         ...summary(r),
-        title: SCENARIO_BY_ID.get(r.scenario)?.title ?? L(r.scenario, r.scenario),
         report: r.report,
         reportPassed: r.report_passed === null ? null : r.report_passed === 1,
       })),

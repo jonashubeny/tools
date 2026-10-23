@@ -127,6 +127,9 @@ export function Student() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <Link to={`/teach/${data.username}/infra`} className="text-sm">
+            {t('Linuxové laboratoře', 'Linux labs')}
+          </Link>
           <Button variant="primary" busy={starting} onClick={() => void session()}>
             <Presentation size={14} />
             {t('Doučování', 'Tutoring session')}

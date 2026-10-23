@@ -2,6 +2,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Suspense, lazy, useEffect } from 'react';
 import { Navigate, Route, Routes } from 'react-router';
 import { Login } from '../pages/Login';
+import { ModeChoice } from '../pages/ModeChoice';
 import { Onboarding } from '../pages/Onboarding';
 import { Today } from '../pages/Today';
 import { ErrorNote, Loading } from '../ui';
@@ -31,6 +32,15 @@ const Readiness = lazy(() => import('../pages/Readiness').then((m) => ({ default
 const Teach = lazy(() => import('../pages/Teach').then((m) => ({ default: m.Teach })));
 const Student = lazy(() => import('../pages/Student').then((m) => ({ default: m.Student })));
 const TeachSession = lazy(() => import('../pages/TeachSession').then((m) => ({ default: m.TeachSession })));
+const InfraHome = lazy(() => import('../pages/infra/Home').then((m) => ({ default: m.InfraHome })));
+const InfraRoadmap = lazy(() => import('../pages/infra/Roadmap').then((m) => ({ default: m.InfraRoadmap })));
+const InfraScenario = lazy(() => import('../pages/infra/Scenario').then((m) => ({ default: m.InfraScenario })));
+const Workspace = lazy(() => import('../pages/infra/Workspace').then((m) => ({ default: m.Workspace })));
+const InfraLibrary = lazy(() => import('../pages/infra/Library').then((m) => ({ default: m.InfraLibrary })));
+const InfraGuide = lazy(() => import('../pages/infra/Guide').then((m) => ({ default: m.InfraGuide })));
+const InfraHistory = lazy(() => import('../pages/infra/History').then((m) => ({ default: m.InfraHistory })));
+const HostAdmin = lazy(() => import('../pages/infra/HostAdmin').then((m) => ({ default: m.HostAdmin })));
+const InfraStudent = lazy(() => import('../pages/infra/InfraStudent').then((m) => ({ default: m.InfraStudent })));
 
 export function App() {
   const me = useMe();
@@ -60,6 +70,28 @@ export function App() {
         </div>
       ) : !me.data.authenticated ? (
         <Login />
+      ) : me.data.settings.mode === null ? (
+        <ModeChoice me={me.data} />
+      ) : me.data.settings.mode === 'infra' ? (
+        <Shell me={me.data}>
+          <Suspense fallback={<Loading />}>
+            <Routes>
+              <Route path="/" element={<InfraHome />} />
+              <Route path="/infra/roadmap" element={<InfraRoadmap />} />
+              <Route path="/infra/scenarios/:id" element={<InfraScenario />} />
+              <Route path="/infra/attempts/:id" element={<Workspace />} />
+              <Route path="/infra/library" element={<InfraLibrary />} />
+              <Route path="/infra/guide" element={<InfraGuide />} />
+              <Route path="/infra/history" element={<InfraHistory />} />
+              <Route path="/infra/host" element={<HostAdmin />} />
+              <Route path="/teach" element={<Teach />} />
+              <Route path="/teach/:student" element={<InfraStudent />} />
+              <Route path="/teach/:student/infra" element={<InfraStudent />} />
+              <Route path="/settings" element={<Settings />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </Suspense>
+        </Shell>
       ) : !me.data.onboarded ? (
         <Onboarding me={me.data} />
       ) : (
@@ -78,6 +110,7 @@ export function App() {
               <Route path="/teach" element={<Teach />} />
               <Route path="/teach/:student" element={<Student />} />
               <Route path="/teach/:student/session/:id" element={<TeachSession />} />
+              <Route path="/teach/:student/infra" element={<InfraStudent />} />
               <Route path="/errors" element={<Errors />} />
               <Route path="/exams" element={<Exams />} />
               <Route path="/exams/:id" element={<Exam />} />

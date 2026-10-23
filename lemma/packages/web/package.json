@@ -13,6 +13,8 @@
     "@fontsource-variable/red-hat-text": "^5.3.0",
     "@lemma/core": "*",
     "@tanstack/react-query": "^5.104.1",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "katex": "^0.19.0",
     "lucide-react": "^1.52.0",
     "react": "^19.3.0",

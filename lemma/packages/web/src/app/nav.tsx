@@ -1,4 +1,4 @@
-import { type GoalId, L } from '@lemma/core';
+import { type GoalId, type LearningMode, L } from '@lemma/core';
 import {
   type LucideIcon,
   Activity,
@@ -7,7 +7,11 @@ import {
   FlaskConical,
   Gauge,
   GraduationCap,
+  History,
   LayoutDashboard,
+  Library,
+  Route as RouteIcon,
+  Server,
   Map as MapIcon,
   Network,
   Target,
@@ -35,7 +39,7 @@ export interface NavGroup {
   items: NavEntry[];
 }
 
-export function navGroups(who: { entrance: boolean; students: number }): NavGroup[] {
+export function navGroups(who: { entrance: boolean; students: number; mode?: LearningMode | null; admin?: boolean }): NavGroup[] {
   const today: NavGroup = {
     label: null,
     items: [{ to: '/', label: L('Dnes', 'Today'), icon: LayoutDashboard, end: true }],
@@ -44,6 +48,23 @@ export function navGroups(who: { entrance: boolean; students: number }): NavGrou
     who.students > 0
       ? [{ label: L('Výuka', 'Teaching'), items: [{ to: '/teach', label: L('Žáci', 'Students'), icon: Users }] }]
       : [];
+  if (who.mode === 'infra') {
+    return [
+      { label: null, items: [{ to: '/', label: L('Přehled', 'Dashboard'), icon: LayoutDashboard, end: true }] },
+      {
+        label: L('Laboratoře', 'Labs'),
+        items: [
+          { to: '/infra/roadmap', label: L('Cesta a dovednosti', 'Roadmap and skills'), icon: RouteIcon },
+          { to: '/infra/library', label: L('Knihovna', 'Library'), icon: Library },
+          { to: '/infra/history', label: L('Historie', 'History'), icon: History },
+        ],
+      },
+      ...teaching,
+      ...(who.admin
+        ? [{ label: L('Správa', 'Administration'), items: [{ to: '/infra/host', label: L('Server laboratoří', 'Lab host'), icon: Server }] }]
+        : []),
+    ];
+  }
   if (who.entrance) {
     return [
       today,

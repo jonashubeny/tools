@@ -112,6 +112,7 @@ export type AttemptStatus = 'active' | 'solved' | 'abandoned' | 'expired';
 export interface AttemptSummaryDto {
   id: string;
   scenarioId: string;
+  title: L;
   version: number;
   status: AttemptStatus;
   startedAt: number;
@@ -170,6 +171,7 @@ export interface RecommendationDto {
 export interface InfraAssignmentDto {
   id: string;
   scenarioId: string;
+  title: L;
   note: string;
   dueDay: string | null;
   createdBy: string;
@@ -211,7 +213,7 @@ export interface InfraStudentDto {
   username: string;
   skills: SkillProgressDto[];
   recurring: InfraMistakeDto[];
-  attempts: (AttemptSummaryDto & { title: L; report: string; reportPassed: boolean | null })[];
+  attempts: (AttemptSummaryDto & { report: string; reportPassed: boolean | null })[];
   assignments: InfraAssignmentDto[];
   recommendations: RecommendationDto[];
 }

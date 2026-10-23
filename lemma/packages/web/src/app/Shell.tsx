@@ -1,8 +1,19 @@
 import type { MeDto } from '@lemma/core';
 import { useQueryClient } from '@tanstack/react-query';
-import { Languages, LogOut, Menu, MessageSquare, Moon, Search, Settings as SettingsIcon, Sun, X } from 'lucide-react';
+import {
+  ArrowLeftRight,
+  Languages,
+  LogOut,
+  Menu,
+  MessageSquare,
+  Moon,
+  Search,
+  Settings as SettingsIcon,
+  Sun,
+  X,
+} from 'lucide-react';
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
-import { NavLink, useLocation } from 'react-router';
+import { NavLink, useLocation, useNavigate } from 'react-router';
 import { cn } from '../lib/cn';
 import { TutorPanel } from '../tutor/TutorPanel';
 import { type TutorTarget, TutorContext } from '../tutor/context';
@@ -18,6 +29,7 @@ export function Shell({ me, children }: { me: MeDto; children: ReactNode }) {
   const t = useT();
   const client = useQueryClient();
   const location = useLocation();
+  const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [tutorOpen, setTutorOpen] = useState(false);
@@ -60,13 +72,29 @@ export function Shell({ me, children }: { me: MeDto; children: ReactNode }) {
   );
 
   const entrance = useEntrance(me.settings.goal);
-  const groups = useMemo(() => navGroups({ entrance, students: me.students }), [entrance, me.students]);
+  const infra = me.settings.mode === 'infra';
+  const groups = useMemo(
+    () => navGroups({ entrance, students: me.students, mode: me.settings.mode, admin: me.account?.admin }),
+    [entrance, me.students, me.settings.mode, me.account?.admin],
+  );
 
   const sidebar = (
     <nav className="flex h-full flex-col" aria-label={t('Hlavní navigace', 'Main navigation')}>
-      <div className="flex items-baseline gap-2 px-4 pt-5 pb-4">
-        <span className="text-lg font-semibold tracking-tight">Lemma</span>
-        <span className="mono-label">v{me.version}</span>
+      <div className="px-4 pt-5 pb-4">
+        <div className="flex items-baseline gap-2">
+          <span className="text-lg font-semibold tracking-tight">Lemma</span>
+          <span className="mono-label">v{me.version}</span>
+        </div>
+        <button
+          type="button"
+          onClick={() => void saveSetting({ mode: infra ? 'math' : 'infra' }).then(() => navigate('/'))}
+          className="mt-2 flex w-full items-center gap-2 rounded-md border border-border px-2 py-1.5 text-left text-xs text-ink-2 hover:bg-surface-2 hover:text-ink"
+          title={t('Přepnout režim učení', 'Switch learning mode')}
+        >
+          <ArrowLeftRight size={14} className="text-ink-3" />
+          <span className="flex-1">{infra ? t('Linux a infrastruktura', 'Linux & Infrastructure') : t('Matematika', 'Mathematics')}</span>
+          <span className="text-ink-3">{infra ? t('→ matematika', '→ maths') : t('→ Linux', '→ Linux')}</span>
+        </button>
       </div>
       <div className="flex-1 space-y-4 overflow-y-auto px-2 pb-4">
         {groups.map((group, index) => (
@@ -106,7 +134,7 @@ export function Shell({ me, children }: { me: MeDto; children: ReactNode }) {
           <span className="flex-1 text-left">{t('Hledat', 'Search')}</span>
           <Kbd>Ctrl K</Kbd>
         </button>
-        {me.tutor.enabled && (
+        {me.tutor.enabled && !infra && (
           <button
             type="button"
             onClick={() => (tutorOpen ? setTutorOpen(false) : tutor.open())}
@@ -197,7 +225,7 @@ export function Shell({ me, children }: { me: MeDto; children: ReactNode }) {
           <main className="mx-auto w-full max-w-[1180px] flex-1 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">{children}</main>
         </div>
 
-        {tutorOpen && me.tutor.enabled && (
+        {tutorOpen && me.tutor.enabled && !infra && (
           <aside
             className="fixed inset-y-0 right-0 z-40 w-full max-w-[440px] border-l border-border bg-surface-1 xl:sticky xl:top-0 xl:z-0 xl:h-dvh xl:w-[420px] xl:shrink-0"
             style={{ boxShadow: 'var(--shadow)' }}
