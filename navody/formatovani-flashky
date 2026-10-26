@@ -1,0 +1,5 @@
+lsblk                                  # najdi flashku, např. /dev/sdb
+sudo umount /dev/sdX*                  # X nahraď správným písmenem
+sudo wipefs -a /dev/sdX                # smaže staré oddíly a podpisy
+echo 'type=7' | sudo sfdisk /dev/sdX   # jeden oddíl přes celou flashku
+sudo mkfs.exfat -n FLASHKA /dev/sdX1   # naformátuje na exFAT
