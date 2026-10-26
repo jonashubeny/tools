@@ -1,4 +1,10 @@
 {
-    "playlist-url": "https://open.spotify.com/playlist/6B7S2W5Pkk6vIaVsXCmCwb?si=0d091b885dcc482f",
+    "playlist_url": [
+        "https://open.spotify.com/playlist/6B7S2W5Pkk6vIaVsXCmCwb?si=0d091b885dcc482f",
+        "https://open.spotify.com/playlist/37WhSMey7hBBFcCgxrzQ3O?si=ec2fbe6c76cb4ce3",
+        "https://open.spotify.com/playlist/2v88KInlzX63lADknynXjU?si=52b214718eb9427a",
+        "https://open.spotify.com/playlist/6tE4aubs1MhhqNnoZdIOyA?si=5e61851051844785",
+        "https://open.spotify.com/playlist/4ai1Ls8mYYsqXc2KODiTl6?si=1bfaff7b861d4155"
+        ],
     "slozka_mp3": "~/Hudba/playlist"
 }
