@@ -18,3 +18,16 @@ Při prvním spuštění si sám nainstaluje `mutagen` do `.venv-tagy`.
 
 Už otagované soubory (mají album i cover) se přeskakují. Seznam přeskakovaných je
 v `opravit-tagy-preskocit.txt`. Po otagování v Clementine: Nástroje → Prohledat celou sbírku znovu.
+
+## playlist-sync
+
+Stáhne nové písničky ze Spotify playlistů jako mp3 (yt-dlp) a otaguje je včetně coveru.
+Playlisty a cílová složka se nastavují v `playlist-sync/config.json`.
+Podrobný popis je v [playlist-sync/README.md](playlist-sync/README.md).
+
+```bash
+node playlist-sync/playlist-sync.js             # stáhni nové písničky a otaguj je
+node playlist-sync/playlist-sync.js --otagovat  # a otaguj i ručně přidané
+node playlist-sync/playlist-sync.js -d ~/Hudba  # jen otaguj složku, nic nestahuj
+node playlist-sync/playlist-sync.js --help      # všechny přepínače
+```
