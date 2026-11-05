@@ -1,0 +1,15 @@
+# What ./clone-org.sh syncs when run without arguments: <link> <directory>
+# Clones that already exist elsewhere under ~/0_PROJEKTY stay where they are.
+
+# Forgejo, everything I can reach (no organization in the link)
+https://git.modulbit.eu                    ~/0_PROJEKTY/0_MODULBIT
+
+# GitHub
+https://github.com/jonashubeny             ~/0_PROJEKTY
+https://github.com/modulbit-rakathon       ~/0_PROJEKTY/rakathon
+https://github.com/five-games              ~/0_PROJEKTY/unity
+
+# Fedora Forge
+https://forge.fedoraproject.org/jonashub   ~/0_PROJEKTY/0_FEDORA
+# https://forge.fedoraproject.org/docs     ~/0_PROJEKTY/0_FEDORA/docs
+# https://forge.fedoraproject.org/fdwg     ~/0_PROJEKTY/0_FEDORA/fdwg

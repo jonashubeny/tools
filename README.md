@@ -1,6 +1,21 @@
 # tools
 Here I store my tools.
 
+## clone-org.sh
+
+Naklonuje všechna repa organizací a účtů ze seznamu `clone-org.list` a ta, co už naklonovaná jsou,
+stáhne a posune. Přihlášení bere z gitu (`git credential`), `GIT_TOKEN` je potřeba jen na přebití.
+
+```bash
+./clone-org.sh                                  # všechno z clone-org.list
+./clone-org.sh https://github.com/org ~/src/org # jedna organizace
+DRY_RUN=1 ./clone-org.sh                        # jen ukaž, co by se stalo
+```
+
+Existující klony najde podle `origin` kdekoli v `~/0_PROJEKTY`, takže nevznikají duplikáty, a repům
+přesunutým na serveru sám opraví `origin`. Stahuje jen fast-forwardem, lokální práci nikdy nepřepíše.
+Co aktualizovat nešlo, vypíše na konci a skončí s kódem 1.
+
 ## opravit-tagy.py
 
 Opraví tagy mp3 (název, interpret, album, rok, žánr, číslo stopy) a vloží do nich cover alba.
